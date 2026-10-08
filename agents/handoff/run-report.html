@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Run Report — tests/kan/KAN-19.home.spec.ts</title>
+  <style>
+    :root{--green:#22c55e;--red:#ef4444;--amber:#f59e0b;--blue:#3b82f6;--bg:#0f172a;--card:#1e293b;--text:#e2e8f0;--muted:#94a3b8}
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);padding:2rem}
+    .container{max-width:960px;margin:0 auto}
+    header{display:flex;align-items:center;justify-content:space-between;margin-bottom:2rem}
+    h1{font-size:1.5rem}
+    .badge{display:inline-block;padding:.25rem .75rem;border-radius:999px;font-size:.8rem;font-weight:600}
+    .badge.pass{background:var(--green);color:#000}.badge.fail{background:var(--red);color:#fff}
+    .meta{color:var(--muted);font-size:.85rem;margin-bottom:2rem}.meta span{margin-right:1.5rem}
+    .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin-bottom:2rem}
+    .card{background:var(--card);border-radius:.75rem;padding:1.25rem;text-align:center}
+    .card .num{font-size:2rem;font-weight:700}.card .label{color:var(--muted);font-size:.8rem;margin-top:.25rem}
+    h2{font-size:1.15rem;margin-bottom:1rem;border-bottom:1px solid #334155;padding-bottom:.5rem}
+    table{width:100%;border-collapse:collapse;margin-bottom:2rem}
+    th,td{padding:.6rem .8rem;text-align:left;border-bottom:1px solid #334155;font-size:.9rem}
+    th{color:var(--muted);font-weight:600;font-size:.8rem;text-transform:uppercase;letter-spacing:.05em}
+    .bar-container{display:flex;align-items:center;gap:.5rem}
+    .bar{height:8px;border-radius:4px}.bar.green{background:var(--green)}.bar.red{background:var(--red)}
+    .fix-list{list-style:none;margin-bottom:2rem}
+    .fix-list li{background:var(--card);border-radius:.5rem;padding:.8rem 1rem;margin-bottom:.5rem;display:flex;gap:.75rem;align-items:flex-start}
+    .fix-type{display:inline-block;padding:.15rem .5rem;border-radius:4px;font-size:.75rem;font-weight:600;text-transform:uppercase;flex-shrink:0}
+    .fix-type.locator{background:#7c3aed33;color:#a78bfa}.fix-type.assertion{background:#f59e0b33;color:#fbbf24}
+    .fix-type.infrastructure{background:#3b82f633;color:#60a5fa}.fix-type.translation{background:#06b6d433;color:#22d3ee}
+    .fix-type.navigation{background:#ec489933;color:#f472b6}.fix-type.unknown{background:#64748b33;color:#94a3b8}
+    .trend-card{background:var(--card);border-radius:.75rem;padding:.75rem;margin-bottom:2rem;border:1px solid #334155}
+    footer{color:var(--muted);font-size:.75rem;text-align:center;margin-top:3rem}
+  </style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>Run Report — tests/kan/KAN-19.home.spec.ts</h1>
+    <span class="badge pass">ALL PASSED</span>
+  </header>
+  <div class="meta">
+    <span>Spec: <strong>tests/kan/KAN-19.home.spec.ts</strong></span>
+    <span>Date: <strong>2026-06-10</strong></span>
+    <span>Attempts: <strong>2</strong></span>
+  </div>
+  
+      <h2>Self-Healing Progress (This Run)</h2>
+      <div class="trend-card">
+        <svg viewBox="0 0 900 160" width="100%" height="160" role="img" aria-label="Pass-rate progress across attempts">
+          <line x1="40" y1="18" x2="40" y2="142" stroke="#334155" stroke-width="1"/>
+          <line x1="40" y1="142" x2="860" y2="142" stroke="#334155" stroke-width="1"/>
+          <line x1="40" y1="142.0" x2="860" y2="142.0" stroke="#1f2937" stroke-width="1" stroke-dasharray="4,4"/>
+<text x="36.0" y="146.0" text-anchor="end" fill="var(--muted)" font-size="10">0%</text><line x1="40" y1="80.0" x2="860" y2="80.0" stroke="#1f2937" stroke-width="1" stroke-dasharray="4,4"/>
+<text x="36.0" y="84.0" text-anchor="end" fill="var(--muted)" font-size="10">50%</text><line x1="40" y1="18.0" x2="860" y2="18.0" stroke="#1f2937" stroke-width="1" stroke-dasharray="4,4"/>
+<text x="36.0" y="22.0" text-anchor="end" fill="var(--muted)" font-size="10">100%</text>
+          <polyline fill="none" stroke="var(--blue)" stroke-width="2.5" stroke-dasharray="6,3" points="40.0,34.5 860.0,18.0"/>
+          <text x="40.0" y="25.5" text-anchor="middle" fill="var(--red)" font-size="11" font-weight="600">87%</text><text x="860.0" y="9.0" text-anchor="middle" fill="var(--green)" font-size="11" font-weight="600">100%</text>
+          <circle cx="40.0" cy="34.5" r="5" fill="var(--red)" stroke="var(--bg)" stroke-width="1.5"><title>Attempt A1: 86.7% (13 passed, 2 failed)</title></circle><circle cx="860.0" cy="18.0" r="5" fill="var(--green)" stroke="var(--bg)" stroke-width="1.5"><title>Attempt A2: 100.0% (15 passed, 0 failed)</title></circle>
+          <text x="40.0" y="157.0" text-anchor="middle" fill="var(--muted)" font-size="11">A1</text><text x="860.0" y="157.0" text-anchor="middle" fill="var(--muted)" font-size="11">A2</text>
+        </svg>
+      </div>
+  <div class="cards">
+    <div class="card"><div class="num" style="color:var(--green)">15</div><div class="label">Passed</div></div>
+    <div class="card"><div class="num" style="color:var(--red)">0</div><div class="label">Failed</div></div>
+    <div class="card"><div class="num">15</div><div class="label">Total</div></div>
+    <div class="card"><div class="num">2</div><div class="label">Attempts</div></div>
+  </div>
+  <h2>Attempt History</h2>
+  <table>
+    <thead><tr><th>#</th><th>Passed</th><th>Failed</th><th>Duration</th><th>Progress</th><th>Categories</th></tr></thead>
+    <tbody><tr>
+        <td>1</td><td>13</td><td>2</td>
+        <td>22.3s</td>
+        <td><div class="bar-container">
+          <div class="bar green" style="width:calc(13/15*120px)"></div>
+          <div class="bar red" style="width:calc(2/15*120px)"></div>
+          <span style="color:var(--muted);font-size:.8rem">87%</span>
+        </div></td>
+        <td>locator=2</td>
+      </tr>
+<tr>
+        <td>2</td><td>15</td><td>0</td>
+        <td>23.3s</td>
+        <td><div class="bar-container">
+          <div class="bar green" style="width:calc(15/15*120px)"></div>
+          <div class="bar red" style="width:calc(0/15*120px)"></div>
+          <span style="color:var(--muted);font-size:.8rem">100%</span>
+        </div></td>
+        <td>—</td>
+      </tr></tbody>
+  </table>
+  <h2>Attempt Details</h2>
+  <div style="margin-bottom:2rem"><details class="attempt-detail" open>
+  <summary style="cursor:pointer;padding:.6rem 1rem;background:var(--card);border-radius:.5rem;display:flex;align-items:center;gap:.75rem;list-style:none">
+    <span style="font-weight:700">Attempt 1</span>
+    <span class="badge" style="background:var(--red);color:#fff">FAIL</span>
+    <span style="color:var(--muted);font-size:.85rem">passed=13 failed=2 22.3s</span>
+  </summary>
+  <div style="padding:.75rem 1rem 1rem;border:1px solid #334155;border-top:none;border-radius:0 0 .5rem .5rem;margin-bottom:.5rem">
+    
+    <ul class="fix-list"><li><span class="fix-type locator">locator</span><span><strong>TC001 – home page loads with all main elements visible</strong><br/><code style="font-size:.8rem;color:var(--muted)">strict mode violation: getByText('celfronteders') resolved to 2 elements (header span + footer paragraph)</code></span></li><li><span class="fix-type locator">locator</span><span><strong>TC008 – header shows logo icon and site name "celfronteders"</strong><br/><code style="font-size:.8rem;color:var(--muted)">strict mode violation: getByText('celfronteders') resolved to 2 elements (header span + footer paragraph)</code></span></li></ul>
+  </div>
+</details>
+<details class="attempt-detail" >
+  <summary style="cursor:pointer;padding:.6rem 1rem;background:var(--card);border-radius:.5rem;display:flex;align-items:center;gap:.75rem;list-style:none">
+    <span style="font-weight:700">Attempt 2</span>
+    <span class="badge" style="background:var(--green);color:#000">PASS</span>
+    <span style="color:var(--muted);font-size:.85rem">passed=15 failed=0 23.3s</span>
+  </summary>
+  <div style="padding:.75rem 1rem 1rem;border:1px solid #334155;border-top:none;border-radius:0 0 .5rem .5rem;margin-bottom:.5rem">
+    <p style="color:var(--muted);font-size:.8rem;margin:.5rem 0 .25rem">Fixes applied before this attempt:</p><ul class="fix-list"><li><span class="fix-type locator">locator</span><span><code style="font-size:.8rem">pages/home.page.ts</code> — Scoped siteName locator to 'header' to avoid strict-mode conflict with footer text: changed getByText('celfronteders') to page.locator('header').getByText('celfronteders')</span></li></ul>
+    <p style="color:var(--muted);font-size:.85rem">No failures.</p>
+  </div>
+</details></div>
+  
+  
+  <footer>Generated by QA Teammate Orchestrator</footer>
+</div>
+</body>
+</html>

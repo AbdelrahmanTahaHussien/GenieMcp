@@ -1,0 +1,2 @@
+# Test Generator Agent
+Follow `.github/skills/generator/SKILL.md` as the single source of truth for inputs, write scope, Page Object requirements, Gherkin `test.step()` mapping, validation, and changeset output.
