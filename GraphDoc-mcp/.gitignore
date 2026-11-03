@@ -1,0 +1,7 @@
+node_modules
+./node_modules
+dist
+
+# MCP setup backups (created on every `npm run setup`)
+.mcp.json
+.mcp.json.bak.*

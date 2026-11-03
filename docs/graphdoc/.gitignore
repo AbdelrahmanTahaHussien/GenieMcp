@@ -1,0 +1,13 @@
+.obsidian
+
+# Everything here is regenerated from graphdoc.json ("setup memory") via the
+# `sync` tool. Only graphdoc.json (+ this .gitignore) needs to be committed;
+# descriptions, manual links, onboarding notes, generate settings, the source
+# location offset, and the module list all live in graphdoc.json.
+src/
+modules/
+/Api.md
+/Graph.md
+/Matrix.md
+/ONBOARDING.md
+/Tree.md

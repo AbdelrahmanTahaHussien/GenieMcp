@@ -51,10 +51,11 @@ Write/update:
 1. Load `plan.json`.
 2. Resolve open questions that block test behavior; do not silently assume answers.
 3. Choose a relevant existing spec/Page Object pattern using the plan's evidence.
-4. Create or reuse a Page Object in `pages/` for locators and UI actions only.
-5. Generate one spec test per planned case, with Gherkin clauses represented by named `test.step()` blocks.
-6. Validate with `npx playwright test <spec> --list --reporter=line --project=chromium`.
-7. Save `changeset.json` with the generated paths and exact validation result.
+4. Ground page actions, locators, and assertions in the current source/tests referenced by the plan. GraphDoc summaries and dependency edges may guide navigation, but are not proof of UI behavior or expected outcomes.
+5. Create or reuse a Page Object in `pages/` for locators and UI actions only.
+6. Generate one spec test per planned case, with Gherkin clauses represented by named `test.step()` blocks.
+7. Validate with `npx playwright test <spec> --list --reporter=line --project=chromium`.
+8. Save `changeset.json` with the generated paths and exact validation result.
 
 ## Acceptance Criteria
 - Spec path follows project conventions.

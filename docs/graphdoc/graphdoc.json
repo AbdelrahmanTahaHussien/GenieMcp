@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "sourceRoot": "..\\..",
+  "analyze": {
+    "rootFile": null,
+    "rootName": null,
+    "styledComponents": false
+  },
+  "modules": [],
+  "onboard": {},
+  "units": {}
+}

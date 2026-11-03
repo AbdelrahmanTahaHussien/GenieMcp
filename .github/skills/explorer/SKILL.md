@@ -10,6 +10,8 @@ Prepare a compact, evidence-backed plan for the Generator. The user's supplied t
 ## Scope
 
 - Read the repository as needed; write only `agents/handoff/plan.json`.
+- When GraphDoc MCP is available, call `onboard` in compact mode first, then use `query_docs` or `get_unit` only for units relevant to the supplied cases. Use `read_unit_source` when implementation detail is needed. If MCP is unavailable or rejects the project, use `docs/graphdoc/ONBOARDING.md` and only the relevant pages under `docs/graphdoc/src/` as the fallback; note the limitation. Do not regenerate GraphDoc as part of Explorer.
+- Treat GraphDoc output as generated navigation and summary context, not authoritative behavior evidence. Verify runtime behavior, selectors, and expected results against current source and tests, and cite those source/test paths in `repositoryEvidence`. Note likely-stale or missing documentation when it affects the plan. Do not load broad graph or matrix documents unless they answer a specific question.
 - Follow `.github/skills/import-graph/SKILL.md` and use the repository owner's configured graph tool/script when available. Do not install dependencies, invent a command, or implement a graph generator. If no provider is configured, scan only relevant entry points/imports and record the limitation.
 - Use graph edges to identify candidate files, not to assert runtime behavior. Static graphs can miss dynamic imports, aliases, and conditional loading.
 - Inspect only files needed to ground the supplied cases. Record concise paths and why they matter instead of copying source into the handoff.

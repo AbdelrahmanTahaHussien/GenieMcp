@@ -1,0 +1,11 @@
+{
+  "servers": {
+    "graphdoc-mcp": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:\\Users\\nb31136\\Desktop\\AutoMateGenie\\GraphDoc-mcp\\dist\\index.js"
+      ]
+    }
+  }
+}
