@@ -6,6 +6,31 @@ One MCP server combines AutoMateGenie QA tools and GraphDoc codebase navigation.
 
 Requires Node.js 20 or newer. Copy [examples/.vscode/mcp.json](examples/.vscode/mcp.json) and [examples/genie.config.json](examples/genie.config.json) into the consumer repository. Replace `@<org>` with the published GitHub Packages scope.
 
+For Git installation, the Git repository must have this package's `package.json` at its root. Replace the organization placeholder with a dedicated repository containing the `genie-mcp` package:
+
+```json
+{
+  "servers": {
+    "genie-mcp": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "git+https://github.com/<org>/genie-mcp.git#main",
+        "--root",
+        "${workspaceFolder}"
+      ]
+    }
+  }
+}
+```
+
+Pin a release by replacing `main` with a tag, for example `git+https://github.com/<org>/genie-mcp.git#v0.1.0`. For reproducible installs, use an immutable release tag or commit hash rather than a moving branch. The package's `prepare` script builds `dist/server.js` during Git installation.
+
+npm installs the package at the Git repository root; it does not select this package from the parent AutoMateGenie monorepo by a `subdirectory` URL fragment. Keep/publish `genie-mcp` as a standalone Git repository, or use the GitHub Packages install shown above.
+
+For a private repository, authenticate Git itself before starting VS Code: use Git Credential Manager/`gh auth login` with HTTPS, or configure an SSH key and use `git+ssh://git@github.com/<org>/genie-mcp.git#v0.1.0`. Do not put a personal access token in the MCP config or Git URL. The account/key needs read access to the repository.
+
 The published MCP configuration uses:
 
 ```json
