@@ -2,10 +2,12 @@
 /**
  * graphdoc-mcp — MCP server
  *
- * For React apps (Next.js / Remix / Vite / CRA). Gives AI agents (Cursor, VS Code,
- * Claude Code, Windsurf, etc.) a full understanding of a React codebase through 7 tools:
+ * For React apps (Next.js / Remix / Vite / CRA) and plain JS/TS projects (Node.js,
+ * Express, NestJS, libraries, CLIs). Gives AI agents (Cursor, VS Code, Claude Code,
+ * Windsurf, etc.) a full understanding of a codebase — the entry root and all its
+ * dependencies — through these tools:
  *
- *  1. detect_project    — identify the React framework, source root, entry point
+ *  1. detect_project    — identify the framework, source root, entry point
  *  2. analyze_project   — full pipeline: parse + emit all docs + onboarding guide
  *  3. onboard           — read existing docs and return a token-efficient briefing
  *  4. get_tree          — dependency tree (JSON + ASCII)
@@ -31,6 +33,8 @@
  * and rebuilt identically on any device from just `graphdoc.json`.
  *
  * Onboarding is additive by default (pass rebuild:true to wipe docs/src).
+ * includeSpecs (persisted in graphdoc.json) adds spec coverage for testers:
+ * "Tested by" sections on unit pages + Tests.md.
  * styled(CustomComponent), barrel re-exports and dynamic import() are followed.
  */
 
@@ -44,7 +48,8 @@ import { readFile, readdir } from "node:fs/promises";
 import { join, relative, dirname, basename, isAbsolute } from "node:path";
 import { extractPropsFromSource } from "./extract-props.js";
 
-import { detectProject as detectReactProject } from "./detect-project.js";
+import { detectProject as detectSourceProject, noEntryMessage } from "./detect-project.js";
+import { collectSpecs } from "./spec-analyzer.js";
 import { loadPathAliases } from "./tsconfig-paths.js";
 import {
   buildCache,
@@ -53,6 +58,14 @@ import {
   readManualTree,
   readDocsNameIndex,
   extendCache,
+  ensureRootUnit,
+  attachSpecsToTree,
+  expandRoots,
+  buildRootsCache,
+  pickRootUnits,
+  pinnedRootFiles,
+  buildMultiTree,
+  rootsLabel,
   printIndented,
   buildGraphData,
   buildOnboardingContext,
@@ -75,14 +88,14 @@ import {
   type GraphdocState,
   type UnitState,
 } from "./state-store.js";
-import type { FileInfo } from "./types.js";
+import type { FileInfo, SpecSummary } from "./types.js";
 import { emitOnboarding } from "./emit-onboarding.js";
 import { emitFolderDocs } from "./emit-folder-docs.js";
 import { emitMermaid } from "./emit-mermaid.js";
 import { emitGraph } from "./emit-graph.js";
 import { emitMatrix } from "./emit-matrix.js";
 import { emitApi } from "./emit-api.js";
-import { configureGraphdocWrites, graphdocMkdir as mkdir, graphdocWriteFile as writeFile } from "./write-guard.js";
+import { configureGraphdocWrites, graphdocMkdir as mkdir, graphdocRm as rm, graphdocWriteFile as writeFile } from "./write-guard.js";
 
 // Fail fast with a clear message on unsupported Node — old binaries otherwise
 // die with cryptic syntax errors deep inside dependencies.
@@ -113,7 +126,7 @@ export function registerGraphdocTools(
   configureGraphdocWrites({ root: workspaceRoot, graphdocDir });
 
   function detectProject(workDir: string) {
-    const detected = detectReactProject(workDir);
+    const detected = detectSourceProject(workDir);
     detected.docsDir = graphdocDir;
     return detected;
   }
@@ -205,7 +218,7 @@ function applyOutDir(detected: { docsDir: string }, outDir?: string): void {
 
 /** Standard schema description for the outDir override. */
 const OUT_DIR_DESC =
-  "Absolute output directory inside configured graphdocDir. Defaults to graphdocDir.";
+  "Absolute path for the docs directory (default: <repo>/docs). Set this to write/read the documentation anywhere, including outside the repository.";
 
 /**
  * Locate the file defining `unitName`. With a `fileHint` (repo-relative or
@@ -280,30 +293,89 @@ function selectUnitFile(
   };
 }
 
-// Shared detection + cache-building used by most tools
+// Shared detection + cache-building used by most tools. Honors the multi-root
+// `roots` setting from graphdoc.json unless an explicit rootFile is given.
 async function setup(
   workDir?: string,
   rootFile?: string,
   rootName?: string,
   styledComponents?: boolean,
+  outDir?: string,
 ) {
   const dir = resolveWorkDir(workDir);
   checkRootFile(rootFile);
   const detected = detectProject(dir);
+  applyOutDir(detected, outDir);
+  const aliases = loadPathAliases(detected.repoRoot);
+  const opts = cacheOpts(detected, styledComponents);
+
+  const roots = rootFile
+    ? undefined
+    : (await readState(detected.docsDir)).analyze.roots;
+  if (roots?.length) {
+    const files = expandRoots(roots, detected.repoRoot);
+    const cache = await buildRootsCache(files, detected.srcRoot, aliases, opts);
+    const rootUnits = pickRootUnits(
+      cache,
+      files,
+      detected.srcRoot,
+      pinnedRootFiles(roots, detected.repoRoot, files),
+    );
+    const rn = rootName ?? rootsLabel(roots);
+    return { detected, rf: "", rn, cache, rootUnits };
+  }
+
   const rf = rootFile ?? detected.rootFile;
   const rn = rootName ?? detected.rootName;
-  const aliases = loadPathAliases(detected.repoRoot);
-  const cache = await buildCache(detected.srcRoot, rf, aliases, {
-    styledComponents,
-  });
-  return { detected, rf, rn, cache };
+  if (!rf) throw new Error(noEntryMessage(detected));
+  const cache = await buildCache(detected.srcRoot, rf, aliases, opts);
+  ensureRootUnit(cache, rf, rn);
+  return { detected, rf, rn, cache, rootUnits: undefined };
+}
+
+/**
+ * Effective multi-root setting: the tool argument when given (`[]` clears it),
+ * else the value stored in graphdoc.json. Normalized to repo-relative paths.
+ */
+async function resolveRoots(
+  detected: ReturnType<typeof detectProject>,
+  roots?: string[],
+): Promise<string[] | undefined> {
+  const raw = roots ?? (await readState(detected.docsDir)).analyze.roots;
+  if (!raw?.length) return undefined;
+  return raw.map((r) =>
+    (isAbsolute(r) ? relative(detected.repoRoot, r) : r).replace(/\\/g, "/"),
+  );
+}
+
+const ROOTS_DESC =
+  "Multi-root mode for projects with no single entry point: folders (or files) whose files are independent roots, e.g. ['src/pages'] — repo-relative or absolute. Every file directly inside them is its own root (even if another page imports it); files in subfolders become roots only if nothing else imports them (a page's private fragments stay nested); all are documented in ONE doc set (Tree.md shows them side by side, never artificially connected). Overrides rootFile. Persisted in graphdoc.json (analyze.roots); when omitted the stored value is used, pass [] to switch back to the single entry.";
+
+/** Per-file analyzer options for a detected project. */
+function cacheOpts(
+  detected: ReturnType<typeof detectProject>,
+  styledComponents?: boolean,
+) {
+  return { styledComponents, projectKind: detected.kind };
+}
+
+const INCLUDE_SPECS_DESC =
+  "For testers: also scan spec/test files (*.spec.*, *.test.*, __tests__/) and document which units each spec covers — adds a 'Tested by' section with test case titles to every unit page plus Tests.md (coverage map + untested units). Persisted in graphdoc.json (analyze.includeSpecs); when omitted, the stored value is used.";
+
+/** Spec summary lines for tool output (empty when specs are off). */
+function specLines(stats: { specs?: SpecSummary }): string[] {
+  const sp = stats.specs;
+  if (!sp) return [];
+  return [
+    `Specs     : ${sp.files} files, ${sp.tests} test cases, ${sp.coveredUnits}/${sp.totalUnits} units covered (Tests.md)`,
+  ];
 }
 
 // ─── Tool 1: detect_project ───────────────────────────────────────────────
 
 defineTool(
   "detect_project",
-  "Auto-detect the React framework, source root, and entry point from any directory. Recognizes Next.js, Remix, React (Vite), and Create React App. Errors on non-React projects.",
+  "Auto-detect the framework, source root, and entry point from any directory. Recognizes React apps (Next.js, Remix, React (Vite), Create React App) and plain JS/TS projects (Node.js, Express, NestJS, Fastify, Koa, libraries, CLIs — entry taken from package.json main/bin/exports, mapped back to source).",
   {
     workDir: z
       .string()
@@ -319,10 +391,11 @@ defineTool(
           `✅ Project detected`,
           ``,
           `Framework : ${info.framework}`,
+          `Kind      : ${info.kind === "react" ? "React app" : "plain JS/TS"}`,
           `Language  : ${info.language}`,
           `repoRoot  : ${info.repoRoot}`,
           `srcRoot   : ${relative(info.repoRoot, info.srcRoot)}`,
-          `rootFile  : ${relative(info.repoRoot, info.rootFile)}`,
+          `rootFile  : ${info.rootFile ? relative(info.repoRoot, info.rootFile) : "(none found — pass roots=['src/pages'] for a folder of independent roots, or rootFile)"}`,
           `rootName  : ${info.rootName}`,
           `docsDir   : ${relative(info.repoRoot, info.docsDir)}`,
         ].join("\n"),
@@ -351,6 +424,8 @@ defineTool(
       .describe(
         "Include native-tag styled-components (styled.div/.View) as units too. styled(CustomComponent) edges are always captured regardless. Off by default.",
       ),
+    includeSpecs: z.boolean().optional().describe(INCLUDE_SPECS_DESC),
+    roots: z.array(z.string()).optional().describe(ROOTS_DESC),
     rebuild: z
       .boolean()
       .optional()
@@ -364,6 +439,8 @@ defineTool(
     rootFile,
     rootName,
     styledComponents,
+    includeSpecs,
+    roots,
     rebuild,
     outDir,
   }) => {
@@ -372,15 +449,25 @@ defineTool(
       checkRootFile(rootFile);
       const detected = detectProject(dir);
       applyOutDir(detected, outDir);
+      const effRoots = await resolveRoots(detected, roots);
+      if (!effRoots && !rootFile && !detected.rootFile)
+        throw new Error(noEntryMessage(detected));
       const opts = {
         srcRoot: detected.srcRoot,
         rootFile: rootFile ?? detected.rootFile,
-        rootName: rootName ?? detected.rootName,
+        rootName:
+          rootName ?? (effRoots ? rootsLabel(effRoots) : detected.rootName),
         docsDir: detected.docsDir,
         repoRoot: detected.repoRoot,
         framework: detected.framework,
         language: detected.language,
         styledComponents,
+        projectKind: detected.kind,
+        // Unset → fall back to the project config stored in graphdoc.json.
+        includeSpecs:
+          includeSpecs ??
+          (await readState(detected.docsDir)).analyze.includeSpecs,
+        roots: effRoots,
         rebuild,
       };
       const result = await analyze(dir, opts);
@@ -393,8 +480,10 @@ defineTool(
           ...detected,
           rootFile: opts.rootFile,
           rootName: opts.rootName,
+          roots: effRoots,
         },
         treeData,
+        result.specs,
       );
       await emitOnboarding(ctx, detected.docsDir, {
         stateDir: detected.docsDir,
@@ -409,6 +498,8 @@ defineTool(
           rootFile: rootFile ? relative(detected.repoRoot, rootFile) : null,
           rootName: rootName ?? null,
           styledComponents: !!styledComponents,
+          includeSpecs: !!opts.includeSpecs,
+          ...(effRoots ? { roots: effRoots } : {}),
         },
         relative(detected.docsDir, detected.repoRoot),
       );
@@ -417,9 +508,15 @@ defineTool(
         [
           `✅ Analysis complete — ${detected.framework} project`,
           ``,
+          ...(effRoots
+            ? [
+                `Roots     : ${effRoots.join(", ")} → ${Object.keys(treeData).filter((k) => !k.startsWith("🧪 ")).length} independent roots`,
+              ]
+            : []),
           `Files     : ${result.stats.files}`,
           `Units     : ${result.stats.units}`,
           `Edges     : ${edges.length}`,
+          ...specLines(result),
           `Docs      : ${detected.docsDir}`,
           ``,
           `Generated:`,
@@ -428,6 +525,12 @@ defineTool(
           `  • Graph.md       — full DAG`,
           `  • Matrix.md      — dependency matrix`,
           `  • Api.md         — prop/param class diagram`,
+          ...(result.specs
+            ? [
+                `  • Tests.md       — spec coverage map for testers`,
+                `  • docs/specs/    — one page per spec, linked to its units`,
+              ]
+            : []),
           `  • docs/src/      — per-unit wiki pages`,
           ``,
           result.treeText,
@@ -468,7 +571,7 @@ defineTool(
             `Quick detect result:\n` +
             `  Framework : ${detected.framework}\n` +
             `  Language  : ${detected.language}\n` +
-            `  Entry     : ${relative(detected.repoRoot, detected.rootFile)}`,
+            `  Entry     : ${detected.rootFile ? relative(detected.repoRoot, detected.rootFile) : "(none — use roots)"}`,
         );
       }
 
@@ -516,12 +619,13 @@ defineTool(
   },
   async ({ workDir, rootFile, rootName, format, outDir }) => {
     try {
-      const { detected, rf, rn, cache } = await setup(
+      const { detected, rf, rn, cache, rootUnits } = await setup(
         workDir,
         rootFile,
         rootName,
+        undefined,
+        outDir,
       );
-      applyOutDir(detected, outDir);
       const manualEdges = await readManualTree(detected.docsDir);
       const docsIndex = await readDocsNameIndex(
         detected.docsDir,
@@ -535,12 +639,37 @@ defineTool(
         seeds,
         detected.srcRoot,
         loadPathAliases(detected.repoRoot),
+        cacheOpts(detected),
       );
-      const treeData = await buildTree(rf, rn, new Set(), cache, {
+      const manual = {
         edges: manualEdges,
         nameToFile: buildNameIndex(cache),
-      });
+      };
+      const treeData = rootUnits
+        ? await buildMultiTree(
+            rootUnits,
+            cache,
+            manual,
+            computeDisplayNames(cache, detected.srcRoot),
+          )
+        : await buildTree(rf, rn, new Set(), cache, manual);
       const tree: Tree = { [rn]: treeData };
+      // includeSpecs (graphdoc.json): show 🧪 spec leaves under tested units.
+      if ((await readState(detected.docsDir)).analyze.includeSpecs) {
+        const specs = await collectSpecs({
+          repoRoot: detected.repoRoot,
+          docsDir: detected.docsDir,
+          cache,
+          aliases: loadPathAliases(detected.repoRoot),
+        });
+        attachSpecsToTree(
+          tree,
+          cache,
+          detected.srcRoot,
+          detected.repoRoot,
+          specs,
+        );
+      }
       const parts: string[] = [];
       if (format === "json" || format === "both")
         parts.push(
@@ -573,11 +702,7 @@ defineTool(
   },
   async ({ workDir, rootFile, rootName, format }) => {
     try {
-      const { detected, rf, rn, cache } = await setup(
-        workDir,
-        rootFile,
-        rootName,
-      );
+      const { detected, cache } = await setup(workDir, rootFile, rootName);
       const { nodes, edges } = buildGraphData(cache, detected.srcRoot);
       const parts: string[] = [];
       if (format === "edges" || format === "both") {
@@ -628,12 +753,13 @@ defineTool(
   },
   async ({ workDir, rootFile, rootName, unitName, outDir }) => {
     try {
-      const { detected, rf, rn, cache } = await setup(
+      const { detected, cache } = await setup(
         workDir,
         rootFile,
         rootName,
+        undefined,
+        outDir,
       );
-      applyOutDir(detected, outDir);
       const { nodes, edges } = buildGraphData(cache, detected.srcRoot);
 
       // Match by display name (e.g. "ui/Button") first, else by bare name.
@@ -833,7 +959,7 @@ defineTool(
 
 defineTool(
   "generate_graphdoc",
-  "Generate full GraphDoc documentation for a React codebase in one command. Runs the whole pipeline: detect framework → analyze all source files → generate structured docs (Tree, Graph, Matrix, API, per-unit pages) → produce an onboarding guide → explain how to open docs in Obsidian. Call this whenever someone says 'generate docs', 'generate graphdoc', 'onboard me', 'explain this project', 'help me understand this codebase', or 'set this project up for me'.",
+  "Generate full GraphDoc documentation for a React app or plain JS/TS project (Node.js, Express, NestJS, libraries) in one command — the entry root and all its dependencies. Runs the whole pipeline: detect framework → analyze all source files → generate structured docs (Tree, Graph, Matrix, API, per-unit pages) → produce an onboarding guide → explain how to open docs in Obsidian. Call this whenever someone says 'generate docs', 'generate graphdoc', 'onboard me', 'explain this project', 'help me understand this codebase', or 'set this project up for me'.",
   {
     workDir: z
       .string()
@@ -855,6 +981,8 @@ defineTool(
       .describe(
         "Include native-tag styled-components (styled.div/.View) as units too. styled(CustomComponent) edges are always captured regardless. Off by default.",
       ),
+    includeSpecs: z.boolean().optional().describe(INCLUDE_SPECS_DESC),
+    roots: z.array(z.string()).optional().describe(ROOTS_DESC),
     rebuild: z
       .boolean()
       .optional()
@@ -868,6 +996,8 @@ defineTool(
     rootFile,
     rootName,
     styledComponents,
+    includeSpecs,
+    roots,
     rebuild,
     outDir,
   }) => {
@@ -880,9 +1010,14 @@ defineTool(
       out.push("## Step 1 / 3 — Detecting project…\n");
       const detected = detectProject(dir);
       applyOutDir(detected, outDir);
+      const effRoots = await resolveRoots(detected, roots);
+      if (!effRoots && !rootFile && !detected.rootFile)
+        throw new Error(noEntryMessage(detected));
       out.push(
         `✅ **${detected.framework}** (${detected.language})\n` +
-          `   Entry    : ${relative(detected.repoRoot, detected.rootFile)}\n` +
+          (effRoots
+            ? `   Roots    : ${effRoots.join(", ")} (independent roots, no single entry)\n`
+            : `   Entry    : ${relative(detected.repoRoot, rootFile ?? detected.rootFile)}\n`) +
           `   Src root : ${relative(detected.repoRoot, detected.srcRoot)}\n` +
           `   Docs dir : ${relative(detected.repoRoot, detected.docsDir)}\n`,
       );
@@ -892,12 +1027,19 @@ defineTool(
       const opts = {
         srcRoot: detected.srcRoot,
         rootFile: rootFile ?? detected.rootFile,
-        rootName: rootName ?? detected.rootName,
+        rootName:
+          rootName ?? (effRoots ? rootsLabel(effRoots) : detected.rootName),
         docsDir: detected.docsDir,
         repoRoot: detected.repoRoot,
         framework: detected.framework,
         language: detected.language,
         styledComponents,
+        projectKind: detected.kind,
+        // Unset → fall back to the project config stored in graphdoc.json.
+        includeSpecs:
+          includeSpecs ??
+          (await readState(detected.docsDir)).analyze.includeSpecs,
+        roots: effRoots,
         rebuild,
       };
 
@@ -907,8 +1049,14 @@ defineTool(
       const ctx = buildOnboardingContext(
         result.cache,
         detected.srcRoot,
-        { ...detected, rootFile: opts.rootFile, rootName: opts.rootName },
+        {
+          ...detected,
+          rootFile: opts.rootFile,
+          rootName: opts.rootName,
+          roots: effRoots,
+        },
         treeData,
+        result.specs,
       );
       await emitOnboarding(ctx, detected.docsDir, {
         stateDir: detected.docsDir,
@@ -922,6 +1070,8 @@ defineTool(
           rootFile: rootFile ? relative(detected.repoRoot, rootFile) : null,
           rootName: rootName ?? null,
           styledComponents: !!styledComponents,
+          includeSpecs: !!opts.includeSpecs,
+          ...(effRoots ? { roots: effRoots } : {}),
         },
         relative(detected.docsDir, detected.repoRoot),
       );
@@ -930,13 +1080,20 @@ defineTool(
         `✅ Analysis complete\n` +
           `   Files  : ${result.stats.files}\n` +
           `   Units  : ${result.stats.units}\n` +
-          `   Edges  : ${edges.length}\n\n` +
+          `   Edges  : ${edges.length}\n` +
+          (result.specs
+            ? `   Specs  : ${result.specs.files} files, ${result.specs.tests} test cases, ${result.specs.coveredUnits}/${result.specs.totalUnits} units covered\n`
+            : "") +
+          `\n` +
           `   Generated:\n` +
           `   • docs/ONBOARDING.md\n` +
           `   • docs/Tree.md\n` +
           `   • docs/Graph.md\n` +
           `   • docs/Matrix.md\n` +
           `   • docs/Api.md\n` +
+          (result.specs
+            ? `   • docs/Tests.md\n   • docs/specs/ (${result.specs.files} spec pages)\n`
+            : "") +
           `   • docs/src/   (${result.stats.units} unit pages)\n`,
       );
 
@@ -1055,8 +1212,13 @@ defineTool(
   },
   async ({ workDir, unitName, file, rootFile, rootName, outDir }) => {
     try {
-      const { detected, cache } = await setup(workDir, rootFile, rootName);
-      applyOutDir(detected, outDir);
+      const { detected, cache } = await setup(
+        workDir,
+        rootFile,
+        rootName,
+        undefined,
+        outDir,
+      );
 
       const sel = selectUnitFile(
         cache,
@@ -1172,8 +1334,13 @@ defineTool(
     outDir,
   }) => {
     try {
-      const { detected, cache } = await setup(workDir, rootFile, rootName);
-      applyOutDir(detected, outDir);
+      const { detected, cache } = await setup(
+        workDir,
+        rootFile,
+        rootName,
+        undefined,
+        outDir,
+      );
 
       const sel = selectUnitFile(
         cache,
@@ -1279,7 +1446,13 @@ async function buildLinkCache(
   aliases: ReturnType<typeof loadPathAliases>,
   names: string[],
 ): Promise<Map<string, FileInfo>> {
-  const cache = await buildCache(detected.srcRoot, detected.rootFile, aliases);
+  const opts = cacheOpts(detected);
+  const cache = await buildCache(
+    detected.srcRoot,
+    detected.rootFile,
+    aliases,
+    opts,
+  );
   const has = (n: string) => [...cache.values()].some((i) => i.units.has(n));
   const idx = nameIndexFromState(
     await readState(detected.docsDir),
@@ -1288,11 +1461,11 @@ async function buildLinkCache(
   for (const n of names) {
     if (!has(n)) {
       const src = idx.get(n);
-      if (src) await extendCache(cache, [src], detected.srcRoot, aliases);
+      if (src) await extendCache(cache, [src], detected.srcRoot, aliases, opts);
     }
   }
   if (names.every(has)) return cache;
-  return buildCache(detected.srcRoot, undefined, aliases);
+  return buildCache(detected.srcRoot, undefined, aliases, opts);
 }
 
 /** Locate (or decide where to create) the doc page for a unit name. */
@@ -1687,8 +1860,13 @@ defineTool(
     outDir,
   }) => {
     try {
-      const { detected, cache } = await setup(workDir, rootFile, rootName);
-      applyOutDir(detected, outDir);
+      const { detected, cache } = await setup(
+        workDir,
+        rootFile,
+        rootName,
+        undefined,
+        outDir,
+      );
       const docsSrcDir = join(detected.docsDir, "src");
 
       // ── WRITE MODE ────────────────────────────────────────────────────────
@@ -1899,9 +2077,12 @@ async function generateModuleDocs(
   ): Promise<Map<string, FileInfo> | null> => {
     const scoped = preCache?.has(candidate)
       ? subsetReachableFrom(preCache, candidate)
-      : await buildCache(detected.srcRoot, candidate, aliases, {
-          styledComponents,
-        });
+      : await buildCache(
+          detected.srcRoot,
+          candidate,
+          aliases,
+          cacheOpts(detected, styledComponents),
+        );
     return scoped.get(candidate)?.units.has(unitName) ? scoped : null;
   };
 
@@ -1934,9 +2115,12 @@ async function generateModuleDocs(
   if (!moduleFile) {
     const rootCache =
       preCache ??
-      (await buildCache(detected.srcRoot, detected.rootFile, aliases, {
-        styledComponents,
-      }));
+      (await buildCache(
+        detected.srcRoot,
+        detected.rootFile,
+        aliases,
+        cacheOpts(detected, styledComponents),
+      ));
     const found = findUnitFile(rootCache, unitName, file);
     if (found) {
       cache = await scopedFor(found);
@@ -1946,9 +2130,12 @@ async function generateModuleDocs(
 
   // 4) Full crawl — last resort so units anywhere under srcRoot stay findable.
   if (!moduleFile) {
-    const crawl = await buildCache(detected.srcRoot, undefined, aliases, {
-      styledComponents,
-    });
+    const crawl = await buildCache(
+      detected.srcRoot,
+      undefined,
+      aliases,
+      cacheOpts(detected, styledComponents),
+    );
     const found = findUnitFile(crawl, unitName, file);
     if (found) {
       cache = await scopedFor(found);
@@ -1983,6 +2170,7 @@ async function generateModuleDocs(
     srcRoot: detected.srcRoot,
     docsDir: moduleOut,
     srcDocsDir: mainSrcDocs,
+    projectKind: detected.kind,
   });
   const ctx = buildOnboardingContext(
     cache,
@@ -2149,7 +2337,7 @@ defineTool(
       if (!existsSync(projectDir)) {
         throw new Error(
           `Source project not found at "${projectDir}". ` +
-            `Pass workDir=<path to the React app>, or fix \`sourceRoot\` in graphdoc.json (it is relative to the docs folder).`,
+            `Pass workDir=<path to the project>, or fix \`sourceRoot\` in graphdoc.json (it is relative to the docs folder).`,
         );
       }
 
@@ -2161,7 +2349,13 @@ defineTool(
       const rootFile = state.analyze.rootFile
         ? join(detected.repoRoot, state.analyze.rootFile)
         : detected.rootFile;
-      const rootName = state.analyze.rootName ?? detected.rootName;
+      const roots = state.analyze.roots?.length
+        ? state.analyze.roots
+        : undefined;
+      if (!roots && !rootFile) throw new Error(noEntryMessage(detected));
+      const rootName =
+        state.analyze.rootName ??
+        (roots ? rootsLabel(roots) : detected.rootName);
       const opts = {
         srcRoot: detected.srcRoot,
         rootFile,
@@ -2171,6 +2365,9 @@ defineTool(
         framework: detected.framework,
         language: detected.language,
         styledComponents: state.analyze.styledComponents,
+        projectKind: detected.kind,
+        includeSpecs: state.analyze.includeSpecs,
+        roots,
         rebuild: true,
       };
       const result = await analyze(projectDir, opts);
@@ -2179,8 +2376,9 @@ defineTool(
       const ctx = buildOnboardingContext(
         result.cache,
         detected.srcRoot,
-        { ...detected, rootFile, rootName },
+        { ...detected, rootFile, rootName, roots },
         treeData,
+        result.specs,
       );
       await emitOnboarding(ctx, detected.docsDir, {
         stateDir: detected.docsDir,
@@ -2218,6 +2416,7 @@ defineTool(
           `Files     : ${result.stats.files}`,
           `Units     : ${result.stats.units}`,
           `Edges     : ${edges.length}`,
+          ...specLines(result),
           `Docs      : ${detected.docsDir}`,
           ``,
           `Restored from graphdoc.json:`,
@@ -2352,4 +2551,8 @@ defineTool(
   },
 );
 
+// ─── start ─────────────────────────────────────────────────────────────────
+
+// `graphdoc-mcp --setup` runs the opt-in editor configurator (project-scoped by
+// default, `--global` for global editor configs) instead of starting the server.
 }

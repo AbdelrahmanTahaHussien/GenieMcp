@@ -1,9 +1,15 @@
 /**
  * react-analyzer.ts
  *
- * Per-file analyzer for a React app's source: JavaScript, TypeScript, JSX and
- * TSX. Detects React components (functions/arrows that return JSX), plain
- * functions (hooks, utils, reducers), and classes, plus their import graph.
+ * Per-file analyzer for JavaScript, TypeScript, JSX and TSX. Detects React
+ * components (functions/arrows that return JSX), plain functions (hooks,
+ * utils, reducers, handlers), and classes, plus their import graph.
+ *
+ * Plain JS/TS projects (projectKind "node") get extra handling, since their
+ * wiring is mostly references rather than calls/JSX: identifier references
+ * count as edges (`router.get('/', getUsers)`), module-level instances become
+ * units (`const app = express(); app.use(router)`), and CommonJS
+ * `require` / `module.exports` are understood.
  */
 
 import { parseSync } from "oxc-parser";
@@ -12,16 +18,24 @@ import { existsSync } from "node:fs";
 import { join, dirname, extname, resolve, relative } from "node:path";
 import { getLeadingComment } from "./extract-doc.js";
 import { memoizedResolve } from "./file-cache.js";
-import type { FileInfo, UnitInfo, UnitKind, ImportRecord } from "./types.js";
+import type {
+  FileInfo,
+  UnitInfo,
+  UnitKind,
+  ImportRecord,
+  ProjectKind,
+  ApiMember,
+  UnitApi,
+} from "./types.js";
 import { matchAliasPattern, type PathAliases } from "./tsconfig-paths.js";
 
 const isPascal = (s: string) => /^[A-Z]/.test(s);
 
 // ─── path resolution ───────────────────────────────────────────────────────
 
-const EXTS = [".jsx", ".tsx", ".js", ".ts", ".mjs", ".cjs"];
+const EXTS = [".jsx", ".tsx", ".js", ".ts", ".mjs", ".cjs", ".mts", ".cts"];
 
-/** True if a file is React-app source this analyzer can parse. */
+/** True if a file is JS/TS source this analyzer can parse. */
 export function isReactSourceFile(filePath: string): boolean {
   return EXTS.includes(extname(filePath).toLowerCase());
 }
@@ -33,9 +47,22 @@ export function isReactSourceFile(filePath: string): boolean {
  * slow filesystems. The memo is invalidated by file-cache when any source file
  * changes/disappears.
  */
+/** NodeNext / ESM-style TS imports name the emitted file: `./x.js` → `./x.ts`. */
+const JS_TO_TS: Record<string, string[]> = {
+  ".js": [".ts", ".tsx"],
+  ".jsx": [".tsx"],
+  ".mjs": [".mts"],
+  ".cjs": [".cts"],
+};
+
 function resolveFsLike(base: string): string | null {
   return memoizedResolve(base, () => {
-    if (extname(base) && existsSync(base)) return base;
+    const ext = extname(base);
+    if (ext && existsSync(base)) return base;
+    for (const ts of JS_TO_TS[ext] ?? []) {
+      const swapped = base.slice(0, -ext.length) + ts;
+      if (existsSync(swapped)) return swapped;
+    }
     for (const ext of EXTS) if (existsSync(base + ext)) return base + ext;
     for (const ext of EXTS) {
       const idx = join(base, "index" + ext);
@@ -126,7 +153,7 @@ type BodyScan = {
  *
  * Replaces what used to be four separate full-tree walks per unit.
  */
-function scanBody(bodyNode: unknown, selfName: string): BodyScan {
+function scanBody(bodyNode: unknown, selfName: string, refs = false): BodyScan {
   const jsxUsed = new Set<string>();
   const callsUsed = new Set<string>();
   const dynamicSpecs: string[] = [];
@@ -193,8 +220,350 @@ function scanBody(bodyNode: unknown, selfName: string): BodyScan {
     }
   });
 
+  if (refs) collectRefs(bodyNode, callsUsed, selfName);
+
   return { hasJsx, jsxUsed, callsUsed, dynamicSpecs };
 }
+
+/**
+ * Collect every identifier *reference* in a subtree — plain-JS wiring passes
+ * units around instead of calling them (`router.get('/', getUsers)`,
+ * `app.use(authMiddleware)`, `constructor(private svc: UserService)`).
+ * Property names (`obj.foo`, `{ foo: 1 }`, class members) are not references
+ * and are skipped. Names that don't resolve to a first-party unit are dropped
+ * later during resolution, so locals/params are harmless.
+ */
+function collectRefs(node: unknown, out: Set<string>, selfName: string): void {
+  if (!node || typeof node !== "object") return;
+  if (Array.isArray(node)) {
+    for (const x of node) collectRefs(x, out, selfName);
+    return;
+  }
+  const n = node as Record<string, unknown>;
+  if (n.type === "Identifier" || n.type === "IdentifierReference") {
+    const name = n.name as string;
+    if (name && name !== selfName) out.add(name);
+    return;
+  }
+  const skipKey =
+    !n.computed &&
+    (n.type === "MemberExpression"
+      ? "property"
+      : n.type === "Property" ||
+          n.type === "MethodDefinition" ||
+          n.type === "PropertyDefinition" ||
+          n.type === "AccessorProperty" ||
+          n.type === "TSPropertySignature" ||
+          n.type === "TSMethodSignature"
+        ? n.shorthand
+          ? null // `{ foo }` — key and value are the same reference
+          : "key"
+        : null);
+  for (const k of Object.keys(n)) {
+    if (k === skipKey) continue;
+    const v = n[k];
+    if (v && typeof v === "object") collectRefs(v, out, selfName);
+  }
+}
+
+/** `require('<spec>')` → spec, else null. */
+function requireSpec(node: unknown): string | null {
+  const n = node as Record<string, unknown> | null;
+  if (n?.type !== "CallExpression") return null;
+  const callee = n.callee as Record<string, unknown>;
+  if (callee?.type !== "Identifier" || callee.name !== "require") return null;
+  const a = (n.arguments as Record<string, unknown>[])?.[0];
+  return a &&
+    (a.type === "Literal" || a.type === "StringLiteral") &&
+    typeof a.value === "string"
+    ? a.value
+    : null;
+}
+
+/**
+ * Root identifier of a call/member chain: `app.use(x)` → "app",
+ * `router.route('/').get(h)` → "router", `await db.connect()` → "db".
+ */
+function chainRoot(node: unknown): string | null {
+  let n = node as Record<string, unknown> | null;
+  while (n) {
+    if (n.type === "Identifier") return n.name as string;
+    if (n.type === "AwaitExpression") n = n.argument as Record<string, unknown>;
+    else if (n.type === "CallExpression")
+      n = n.callee as Record<string, unknown>;
+    else if (n.type === "MemberExpression")
+      n = n.object as Record<string, unknown>;
+    else if (n.type === "ChainExpression")
+      n = n.expression as Record<string, unknown>;
+    else return null;
+  }
+  return null;
+}
+
+/** `module.exports` / `exports` / `module.exports.foo` / `exports.foo` target. */
+function cjsExportTarget(
+  left: unknown,
+): { kind: "default" } | { kind: "named"; name: string } | null {
+  const l = left as Record<string, unknown> | null;
+  if (l?.type !== "MemberExpression" || l.computed) return null;
+  const obj = l.object as Record<string, unknown>;
+  const prop = (l.property as Record<string, unknown>)?.name as string;
+  // module.exports = …
+  if (obj?.type === "Identifier" && obj.name === "module" && prop === "exports")
+    return { kind: "default" };
+  // exports.foo = …
+  if (obj?.type === "Identifier" && obj.name === "exports")
+    return { kind: "named", name: prop };
+  // module.exports.foo = …
+  if (
+    obj?.type === "MemberExpression" &&
+    (obj.object as Record<string, unknown>)?.name === "module" &&
+    (obj.property as Record<string, unknown>)?.name === "exports"
+  )
+    return { kind: "named", name: prop };
+  return null;
+}
+
+// ─── API shape (Api.md for plain JS/TS projects) ──────────────────────────
+
+type AstNode = Record<string, unknown>;
+
+/** Source text of a type annotation (`: Promise<X>` → `Promise<X>`). */
+function typeText(ann: unknown, source: string): string | undefined {
+  let a = ann as AstNode | null;
+  if (!a) return undefined;
+  if (a.type === "TSTypeAnnotation") a = a.typeAnnotation as AstNode;
+  if (typeof a?.start !== "number" || typeof a?.end !== "number")
+    return undefined;
+  return source.slice(a.start, a.end).replace(/\s+/g, " ").trim();
+}
+
+/** `"x"` → string, `1` → number, `true` → boolean (unannotated fields). */
+function literalType(v: unknown): string | undefined {
+  const n = v as AstNode | null;
+  if (n?.type === "TemplateLiteral") return "string";
+  if (n?.type !== "Literal" && n?.type !== "StringLiteral") return undefined;
+  const t = typeof n.value;
+  return t === "string" || t === "number" || t === "boolean" ? t : undefined;
+}
+
+function keyName(key: unknown): string | null {
+  const k = key as AstNode | null;
+  if (!k) return null;
+  if (k.type === "Identifier") return k.name as string;
+  if (k.type === "PrivateIdentifier") return `#${k.name as string}`;
+  if (
+    (k.type === "Literal" || k.type === "StringLiteral") &&
+    typeof k.value === "string"
+  )
+    return k.value;
+  return null;
+}
+
+/** `user: TestUser`, `...args`, `opts = {}` → `opts?`, `{ a, b }` → `{…}`. */
+function paramText(p: unknown, source: string): string {
+  const n = p as AstNode;
+  switch (n?.type) {
+    case "TSParameterProperty":
+      return paramText(n.parameter, source);
+    case "Identifier": {
+      const t = typeText(n.typeAnnotation, source);
+      return `${n.name as string}${n.optional ? "?" : ""}${t ? `: ${t}` : ""}`;
+    }
+    case "AssignmentPattern": {
+      const inner = paramText(n.left, source);
+      const [name, ...rest] = inner.split(":");
+      return `${name}?${rest.length ? ":" + rest.join(":") : ""}`;
+    }
+    case "RestElement": {
+      // The annotation sits on the RestElement, not on its argument.
+      const t = typeText(n.typeAnnotation, source);
+      const inner = paramText(n.argument, source);
+      return `...${inner}${t && !inner.includes(":") ? `: ${t}` : ""}`;
+    }
+    case "ObjectPattern":
+    case "ArrayPattern": {
+      const t = typeText(n.typeAnnotation, source);
+      return `${n.type === "ObjectPattern" ? "{…}" : "[…]"}${t ? `: ${t}` : ""}`;
+    }
+    default:
+      return "…";
+  }
+}
+
+const visibilityOf = (n: AstNode): ApiMember["visibility"] =>
+  n.accessibility === "private" ||
+  (n.key as AstNode | undefined)?.type === "PrivateIdentifier"
+    ? "private"
+    : n.accessibility === "protected"
+      ? "protected"
+      : "public";
+
+function fnMember(
+  name: string,
+  fn: AstNode,
+  source: string,
+  extra: Partial<ApiMember> = {},
+): ApiMember {
+  return {
+    name,
+    kind: "method",
+    params: ((fn.params as unknown[]) ?? []).map((p) => paramText(p, source)),
+    type: typeText(fn.returnType, source),
+    visibility: "public",
+    ...extra,
+  };
+}
+
+/** Public shape of a class / function / object literal, for Api.md. */
+function extractApi(decl: unknown, source: string): UnitApi | undefined {
+  const d = decl as AstNode | null;
+  if (!d) return undefined;
+
+  if (d.type === "ClassDeclaration" || d.type === "ClassExpression") {
+    const members: ApiMember[] = [];
+    for (const m of ((d.body as AstNode)?.body as AstNode[]) ?? []) {
+      const name = keyName(m.key);
+      const isAbstract =
+        String(m.type).startsWith("TSAbstract") || !!m.abstract;
+      const value = m.value as AstNode | null;
+      if (
+        (m.type === "MethodDefinition" ||
+          m.type === "TSAbstractMethodDefinition") &&
+        name
+      ) {
+        if (m.kind === "constructor") {
+          // `constructor(private readonly page: Page)` declares fields.
+          for (const p of (value?.params as AstNode[]) ?? []) {
+            if (p.type !== "TSParameterProperty") continue;
+            const param = p.parameter as AstNode;
+            const id = (
+              param.type === "AssignmentPattern" ? param.left : param
+            ) as AstNode;
+            // `private users = new UserRepository()` → type from the default.
+            const dflt =
+              param.type === "AssignmentPattern"
+                ? (param.right as AstNode)
+                : undefined;
+            const ctor =
+              dflt?.type === "NewExpression" &&
+              (dflt.callee as AstNode)?.type === "Identifier"
+                ? ((dflt.callee as AstNode).name as string)
+                : undefined;
+            members.push({
+              name: id.name as string,
+              kind: "field",
+              type:
+                typeText(id.typeAnnotation, source) ??
+                ctor ??
+                literalType(dflt),
+              visibility: visibilityOf(p),
+            });
+          }
+          continue;
+        }
+        if (m.kind === "get" || m.kind === "set") {
+          if (members.some((x) => x.name === name)) continue;
+          members.push({
+            name,
+            kind: "field",
+            type: typeText(value?.returnType, source),
+            visibility: visibilityOf(m),
+            static: !!m.static,
+          });
+          continue;
+        }
+        members.push(
+          fnMember(name, value ?? {}, source, {
+            visibility: visibilityOf(m),
+            static: !!m.static,
+            abstract: isAbstract,
+          }),
+        );
+      } else if (
+        (m.type === "PropertyDefinition" ||
+          m.type === "TSAbstractPropertyDefinition" ||
+          m.type === "AccessorProperty") &&
+        name
+      ) {
+        const isFn =
+          value?.type === "ArrowFunctionExpression" ||
+          value?.type === "FunctionExpression";
+        if (isFn) {
+          members.push(
+            fnMember(name, value!, source, {
+              visibility: visibilityOf(m),
+              static: !!m.static,
+            }),
+          );
+          continue;
+        }
+        // `form = new Form(…)` → type Form when not annotated.
+        const ctor =
+          value?.type === "NewExpression" &&
+          (value.callee as AstNode)?.type === "Identifier"
+            ? ((value.callee as AstNode).name as string)
+            : undefined;
+        members.push({
+          name,
+          kind: "field",
+          type:
+            typeText(m.typeAnnotation, source) ?? ctor ?? literalType(value),
+          visibility: visibilityOf(m),
+          static: !!m.static,
+          abstract: isAbstract,
+        });
+      }
+    }
+    const sup = d.superClass as AstNode | null;
+    const impl = ((d.implements as AstNode[]) ?? [])
+      .map((i) => keyName(i.expression))
+      .filter((n): n is string => !!n);
+    return {
+      shape: "class",
+      members,
+      ...(sup?.type === "Identifier" ? { extends: sup.name as string } : {}),
+      ...(impl.length ? { implements: impl } : {}),
+      ...(d.abstract ? { abstract: true } : {}),
+    };
+  }
+
+  if (
+    d.type === "FunctionDeclaration" ||
+    d.type === "FunctionExpression" ||
+    d.type === "ArrowFunctionExpression"
+  ) {
+    return { shape: "function", members: [fnMember("", d, source)] };
+  }
+
+  if (d.type === "ObjectExpression") {
+    const members: ApiMember[] = [];
+    for (const p of (d.properties as AstNode[]) ?? []) {
+      if (p.type !== "Property") continue;
+      const name = keyName(p.key);
+      const v = p.value as AstNode;
+      if (!name) continue;
+      if (
+        p.method ||
+        v?.type === "FunctionExpression" ||
+        v?.type === "ArrowFunctionExpression"
+      )
+        members.push(fnMember(name, v, source));
+      else members.push({ name, kind: "field", visibility: "public" });
+    }
+    return { shape: "object", members };
+  }
+  return undefined;
+}
+
+/** Initializers that make a module-level `const` an architectural unit (node mode). */
+const INSTANCE_INITS = new Set([
+  "CallExpression",
+  "NewExpression",
+  "ObjectExpression",
+  "ClassExpression",
+  "AwaitExpression",
+]);
 
 /**
  * Collect the string specifiers of dynamic `import()` calls anywhere inside a
@@ -289,6 +658,11 @@ export type AnalyzeOptions = {
    * Off by default — only meaningful for projects that use styled-components.
    */
   styledComponents?: boolean;
+  /**
+   * "node" enables plain-JS/TS handling (identifier references as edges,
+   * module-level instances as units, CommonJS). Default "react".
+   */
+  projectKind?: ProjectKind;
 };
 
 export async function analyzeReactFile(
@@ -298,6 +672,7 @@ export async function analyzeReactFile(
   opts: AnalyzeOptions = {},
 ): Promise<FileInfo> {
   const includeStyled = opts.styledComponents === true;
+  const node = opts.projectKind === "node";
   const emptyResult: FileInfo = {
     imports: new Map(),
     units: new Map(),
@@ -306,6 +681,7 @@ export async function analyzeReactFile(
     reExports: new Map(),
     wildcardReExports: [],
     pendingLazy: [],
+    moduleUsed: new Set(),
   };
 
   let source: string;
@@ -337,7 +713,40 @@ export async function analyzeReactFile(
   const reExports = new Map<string, ImportRecord>();
   const wildcardReExports: string[] = [];
   const pendingLazy: Array<{ unit: string; file: string }> = [];
+  const moduleUsed = new Set<string>();
+  /**
+   * Node mode: private module-level instances that are NOT units
+   * (`const service = new UserService()`) → names their initializer uses.
+   * Units referencing them inherit those names, so `getUsers → service.list()`
+   * still yields the `getUsers → UserService` edge.
+   */
+  const privateInits = new Map<string, Set<string>>();
+  /** API shape of those private instances, kept in case they get promoted. */
+  const privateApis = new Map<string, UnitApi>();
+  /** Module-level statements outside any unit, attributed after the loop. */
+  const topLevel: unknown[] = [];
   let defaultExport: string | null = null;
+
+  // Node mode: names whose methods are called at module level (`app.use(…)`,
+  // `router.get(…)`) — such instances are wiring hubs and become units.
+  const memberCalled = new Set<string>();
+  if (node) {
+    for (const stmt of program.body as unknown as Record<string, unknown>[]) {
+      if (stmt.type !== "ExpressionStatement") continue;
+      const e = stmt.expression as Record<string, unknown>;
+      const callee = (e.type === "AwaitExpression" ? e.argument : e) as Record<
+        string,
+        unknown
+      >;
+      if (
+        callee?.type === "CallExpression" &&
+        (callee.callee as Record<string, unknown>)?.type !== "Identifier"
+      ) {
+        const root = chainRoot(callee);
+        if (root) memberCalled.add(root);
+      }
+    }
+  }
 
   // Determine if file has any JSX — guides kind classification
   let fileHasJsx = false;
@@ -345,16 +754,24 @@ export async function analyzeReactFile(
     if (n.type === "JSXElement" || n.type === "JSXFragment") fileHasJsx = true;
   });
 
+  // Node mode scans the whole class node, so `extends BasePage` /
+  // `implements Repo` / decorators count as edges; React mode keeps the body
+  // only (`extends Component` is never first-party anyway).
+  const classScope = (cls: Record<string, unknown>): unknown =>
+    node ? cls : cls.body;
+
   const collectUnit = (
     name: string,
     bodyNode: unknown,
     stmtStart: number,
     isClass = false,
+    /** Declaring node (function / class) — node mode extracts its API shape. */
+    decl?: unknown,
   ) => {
     // Class React components render JSX too (`class App extends Component`),
     // so scan their bodies for JSX as well — otherwise a class root reports
     // zero edges. `kind` stays "class" regardless.
-    const scan = scanBody(bodyNode, name);
+    const scan = scanBody(bodyNode, name, node);
     const kind: UnitKind = isClass
       ? "class"
       : scan.hasJsx || (fileHasJsx && isPascal(name))
@@ -376,7 +793,8 @@ export async function analyzeReactFile(
     }
 
     const description = getLeadingComment(comments ?? [], source, stmtStart);
-    units.set(name, { used, description, kind });
+    const api = node ? extractApi(decl, source) : undefined;
+    units.set(name, { used, description, kind, ...(api ? { api } : {}) });
   };
 
   // `<Name>Props` / bare `Props` declarations seen in this file. Collected in
@@ -416,19 +834,23 @@ export async function analyzeReactFile(
     propsDecls.set(name, props);
   };
 
-  const tryCollectDecl = (decl: unknown, stmtStart: number): string | null => {
+  const tryCollectDecl = (
+    decl: unknown,
+    stmtStart: number,
+    exported = false,
+  ): string | null => {
     if (!decl || typeof decl !== "object") return null;
     const d = decl as Record<string, unknown>;
 
     if (d.type === "FunctionDeclaration" && d.id) {
       const name = (d.id as Record<string, unknown>).name as string;
-      collectUnit(name, d.body, stmtStart);
+      collectUnit(name, d.body, stmtStart, false, d);
       return name;
     }
 
     if (d.type === "ClassDeclaration" && d.id) {
       const name = (d.id as Record<string, unknown>).name as string;
-      collectUnit(name, d.body, stmtStart, true);
+      collectUnit(name, classScope(d), stmtStart, true, d);
       return name;
     }
 
@@ -437,6 +859,42 @@ export async function analyzeReactFile(
       for (const v of d.declarations as Record<string, unknown>[]) {
         const init = v.init as Record<string, unknown> | null;
         const id = v.id as Record<string, unknown>;
+
+        // CommonJS imports: `const x = require('./x')`,
+        // `const { a, b: c } = require('./x')`, `const a = require('./x').a`.
+        if (node && init) {
+          const isMember =
+            init.type === "MemberExpression" &&
+            !init.computed &&
+            requireSpec(init.object);
+          const spec = isMember ? requireSpec(init.object) : requireSpec(init);
+          if (spec) {
+            const target = resolveImport(file, spec, aliases);
+            if (target) {
+              if (id?.type === "Identifier") {
+                imports.set(id.name as string, {
+                  file: target,
+                  importedName: isMember
+                    ? ((init.property as Record<string, unknown>)
+                        .name as string)
+                    : "default",
+                });
+              } else if (id?.type === "ObjectPattern") {
+                for (const p of id.properties as Record<string, unknown>[]) {
+                  const key = p.key as Record<string, unknown>;
+                  const val = p.value as Record<string, unknown>;
+                  if (key?.type === "Identifier" && val?.type === "Identifier")
+                    imports.set(val.name as string, {
+                      file: target,
+                      importedName: key.name as string,
+                    });
+                }
+              }
+            }
+            continue;
+          }
+        }
+
         if (id?.type !== "Identifier") continue;
         const name = id.name as string;
 
@@ -444,7 +902,13 @@ export async function analyzeReactFile(
           init?.type === "ArrowFunctionExpression" ||
           init?.type === "FunctionExpression";
         if (isFn) {
-          collectUnit(name, (init as Record<string, unknown>).body, stmtStart);
+          collectUnit(
+            name,
+            (init as Record<string, unknown>).body,
+            stmtStart,
+            false,
+            init,
+          );
           last = name;
           continue;
         }
@@ -472,6 +936,34 @@ export async function analyzeReactFile(
             last = name;
             continue;
           }
+        }
+
+        // Node mode: module-level instances that are exported or wired up at
+        // module level (`export const userService = new UserService()`,
+        // `const app = express(); app.use(…)`) are units of their own.
+        if (
+          node &&
+          init &&
+          INSTANCE_INITS.has(init.type as string) &&
+          (exported || memberCalled.has(name))
+        ) {
+          const used = new Set<string>();
+          collectRefs(init, used, name);
+          units.set(name, {
+            used,
+            description: getLeadingComment(comments ?? [], source, stmtStart),
+            kind: init.type === "ClassExpression" ? "class" : "other",
+            ...(extractApi(init, source)
+              ? { api: extractApi(init, source) }
+              : {}),
+          });
+          last = name;
+        } else if (node && init && INSTANCE_INITS.has(init.type as string)) {
+          const used = new Set<string>();
+          collectRefs(init, used, name);
+          privateInits.set(name, used);
+          const api = extractApi(init, source);
+          if (api) privateApis.set(name, api);
         }
       }
       return last;
@@ -537,7 +1029,7 @@ export async function analyzeReactFile(
 
       if (stmt.declaration) {
         tryCollectPropsDecl(stmt.declaration);
-        tryCollectDecl(stmt.declaration, stmt.start as number);
+        tryCollectDecl(stmt.declaration, stmt.start as number, true);
         continue;
       }
 
@@ -593,26 +1085,192 @@ export async function analyzeReactFile(
         const name = (d.id as Record<string, unknown>).name as string;
         collectUnit(
           name,
-          d.body,
+          d.type === "ClassDeclaration" ? classScope(d) : d.body,
           stmt.start as number,
           d.type === "ClassDeclaration",
+          d,
         );
         defaultExport = name;
       } else if (d.type === "Identifier") {
         defaultExport = d.name as string;
+      } else if (node && d.type === "ClassDeclaration") {
+        // `export default class { … }` (anonymous)
+        const synth = fileToUnitName(file, srcRoot);
+        collectUnit(synth, classScope(d), stmt.start as number, true, d);
+        defaultExport = synth;
       } else if (
         d.type === "ArrowFunctionExpression" ||
         d.type === "FunctionExpression"
       ) {
         const synth = fileToUnitName(file, srcRoot);
-        collectUnit(synth, d.body, stmt.start as number);
+        collectUnit(synth, d.body, stmt.start as number, false, d);
         defaultExport = synth;
       }
       continue;
     }
 
+    // CommonJS exports: `module.exports = X | function … | { a, b }`,
+    // `exports.foo = …`, `module.exports.foo = …`.
+    if (node && stmt.type === "ExpressionStatement") {
+      const e = stmt.expression as Record<string, unknown>;
+      const target =
+        e.type === "AssignmentExpression" ? cjsExportTarget(e.left) : null;
+      if (target) {
+        const right = e.right as Record<string, unknown>;
+        const isFn =
+          right.type === "FunctionExpression" ||
+          right.type === "ArrowFunctionExpression" ||
+          right.type === "ClassExpression";
+        const start = stmt.start as number;
+        if (target.kind === "named") {
+          if (isFn) {
+            collectUnit(
+              target.name,
+              right.type === "ClassExpression" ? classScope(right) : right.body,
+              start,
+              right.type === "ClassExpression",
+              right,
+            );
+          } else if (right.type === "Identifier") {
+            reExports.set(target.name, {
+              file,
+              importedName: right.name as string,
+            });
+            continue;
+          } else {
+            const req = requireSpec(right);
+            const reFile = req ? resolveImport(file, req, aliases) : null;
+            if (reFile)
+              reExports.set(target.name, {
+                file: reFile,
+                importedName: "default",
+              });
+            else topLevel.push(right);
+            continue;
+          }
+          reExports.set(target.name, { file, importedName: target.name });
+          continue;
+        }
+        // module.exports = …
+        if (right.type === "Identifier") {
+          defaultExport = right.name as string;
+        } else if (isFn) {
+          const id = right.id as Record<string, unknown> | null;
+          const name = (id?.name as string) ?? fileToUnitName(file, srcRoot);
+          collectUnit(
+            name,
+            right.type === "ClassExpression" ? classScope(right) : right.body,
+            start,
+            right.type === "ClassExpression",
+            right,
+          );
+          defaultExport = name;
+        } else if (right.type === "ObjectExpression") {
+          // `module.exports = { a, b: c, d: require('./d') }` — named exports.
+          for (const p of right.properties as Record<string, unknown>[]) {
+            const key = p.key as Record<string, unknown>;
+            const val = p.value as Record<string, unknown>;
+            const exportedName = (key?.name ?? key?.value) as string;
+            if (!exportedName || !val) continue;
+            const req = requireSpec(val);
+            const reFile = req ? resolveImport(file, req, aliases) : null;
+            if (val.type === "Identifier")
+              reExports.set(exportedName, {
+                file,
+                importedName: val.name as string,
+              });
+            else if (reFile)
+              reExports.set(exportedName, {
+                file: reFile,
+                importedName: "default",
+              });
+            else if (
+              val.type === "FunctionExpression" ||
+              val.type === "ArrowFunctionExpression"
+            ) {
+              collectUnit(exportedName, val.body, start, false, val);
+              reExports.set(exportedName, { file, importedName: exportedName });
+            }
+          }
+        } else {
+          const req = requireSpec(right);
+          const reFile = req ? resolveImport(file, req, aliases) : null;
+          if (reFile)
+            reExports.set("default", { file: reFile, importedName: "default" });
+          else topLevel.push(right);
+        }
+        continue;
+      }
+    }
+
     tryCollectPropsDecl(stmt);
-    tryCollectDecl(stmt, stmt.start as number);
+    const declared = tryCollectDecl(stmt, stmt.start as number);
+    // Module-level statements that define no unit (`bootstrap()`,
+    // `app.listen(3000)`, `createRoot(…).render(<App />)`).
+    if (!declared && !/Declaration$/.test(stmt.type as string))
+      topLevel.push(stmt);
+  }
+
+  // Attribute module-level statements: in node mode, `x.method(…)` on a
+  // module-level unit `x` extends that unit's edges (router.get(…, handler));
+  // everything else feeds moduleUsed (used by a synthetic entry root unit).
+  for (const stmt of topLevel) {
+    const scan = scanBody(stmt, "", node);
+    const used = new Set([...scan.jsxUsed, ...scan.callsUsed]);
+    const s = stmt as Record<string, unknown>;
+    const root = node
+      ? chainRoot(s.type === "ExpressionStatement" ? s.expression : s)
+      : null;
+    // Only method calls on an instance (`app.use(…)`) extend that unit; a plain
+    // `bootstrap()` call is module-level usage, not part of bootstrap itself.
+    const owner = root && memberCalled.has(root) ? units.get(root) : undefined;
+    for (const n of used) {
+      if (owner && n !== root) owner.used.add(n);
+      else if (!owner) moduleUsed.add(n);
+    }
+  }
+
+  // Instances exported after the fact (`module.exports = { logger }`,
+  // `export { db }`, `export default app`) aren't private — promote them to
+  // units so importers resolve them.
+  const exportedLocals = [
+    ...[...reExports.values()]
+      .filter((r) => r.file === file)
+      .map((r) => r.importedName),
+    ...(defaultExport ? [defaultExport] : []),
+  ];
+  for (const name of exportedLocals) {
+    const used = privateInits.get(name);
+    if (!used || units.has(name)) continue;
+    const api = privateApis.get(name);
+    units.set(name, {
+      used,
+      description: null,
+      kind: "other",
+      ...(api ? { api } : {}),
+    });
+    privateInits.delete(name);
+  }
+
+  // Inline private instances (transitively — `const a = new A(); const b = make(a)`).
+  if (privateInits.size) {
+    for (const [selfName, u] of [
+      ...units.entries(),
+      ["", { used: moduleUsed }] as const,
+    ]) {
+      const queue = [...u.used].filter((n) => privateInits.has(n));
+      const seen = new Set<string>();
+      while (queue.length) {
+        const n = queue.pop()!;
+        if (seen.has(n)) continue;
+        seen.add(n);
+        for (const dep of privateInits.get(n)!) {
+          if (dep === selfName) continue;
+          if (privateInits.has(dep)) queue.push(dep);
+          else u.used.add(dep);
+        }
+      }
+    }
   }
 
   // File-level dynamic imports not captured inside a unit body — e.g. a
@@ -664,5 +1322,6 @@ export async function analyzeReactFile(
     reExports,
     wildcardReExports,
     pendingLazy,
+    moduleUsed,
   };
 }

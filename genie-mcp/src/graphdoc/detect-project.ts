@@ -1,20 +1,23 @@
 /**
- * detect-project.ts — React project detector.
+ * detect-project.ts — project detector.
  *
  * 1. Find the package.json root
- * 2. Confirm it's a React project and identify the framework (Next.js / Remix / Vite / CRA)
- * 3. Find the source root (src/, client/src, app/)
- * 4. Find the entry file (App / main / index)
+ * 2. Identify the project kind + framework: React (Next.js / Remix / Vite / CRA),
+ *    otherwise a plain JS/TS project (Node.js, Express, NestJS, Fastify, …)
+ * 3. Find the source root (src/, client/src, app/, lib/, …)
+ * 4. Find the entry file (React: App / main / index; plain: package.json
+ *    main/bin/exports mapped back to source, else index / main / server / app)
  * 5. Derive the root unit name from the entry filename
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, basename, extname, dirname } from "node:path";
-import type { ProjectInfo } from "./types.js";
+import type { ProjectInfo, ProjectKind } from "./types.js";
 
 // ─── manifest detection ────────────────────────────────────────────────────
 
 type Manifest = {
+  kind: ProjectKind;
   language: string;
   framework: string;
   srcDirs: string[];
@@ -30,15 +33,15 @@ function readJson(path: string): Record<string, unknown> {
   }
 }
 
-function detectReact(repoRoot: string): Manifest | null {
-  const pkgPath = join(repoRoot, "package.json");
-  if (!existsSync(pkgPath)) return null;
-  const pkg = readJson(pkgPath);
-  const deps = {
+function depsOf(pkg: Record<string, unknown>): Record<string, unknown> {
+  return {
     ...((pkg.dependencies as object) ?? {}),
     ...((pkg.devDependencies as object) ?? {}),
   };
+}
 
+function detectReact(pkg: Record<string, unknown>): Manifest | null {
+  const deps = depsOf(pkg);
   if (!("react" in deps) && !("react-dom" in deps)) return null;
 
   const isNext = "next" in deps;
@@ -53,6 +56,7 @@ function detectReact(repoRoot: string): Manifest | null {
         : "React (CRA)";
 
   return {
+    kind: "react",
     language: "ts",
     framework,
     srcDirs: isNext ? ["src", "app", "pages"] : ["src", "client/src", "app"],
@@ -68,6 +72,80 @@ function detectReact(repoRoot: string): Manifest | null {
       : ["App", "main", "index"],
     extensions: [".tsx", ".jsx", ".ts", ".js"],
   };
+}
+
+/** Server/CLI frameworks worth naming; first match wins. */
+const NODE_FRAMEWORKS: Array<[dep: string, name: string]> = [
+  ["@nestjs/core", "NestJS"],
+  ["express", "Express"],
+  ["fastify", "Fastify"],
+  ["koa", "Koa"],
+  ["@hapi/hapi", "hapi"],
+  ["hono", "Hono"],
+  ["commander", "Node.js CLI"],
+  ["yargs", "Node.js CLI"],
+];
+
+/** Plain JS/TS project — anything that is not a React app. */
+function detectPlain(repoRoot: string, pkg: Record<string, unknown>): Manifest {
+  const deps = depsOf(pkg);
+  const isTs =
+    "typescript" in deps || existsSync(join(repoRoot, "tsconfig.json"));
+  const named = NODE_FRAMEWORKS.find(([dep]) => dep in deps)?.[1];
+  const framework =
+    named ?? (isTs ? "Node.js (TypeScript)" : "Node.js (JavaScript)");
+  return {
+    kind: "node",
+    language: isTs ? "ts" : "js",
+    framework,
+    srcDirs: ["src", "lib", "app", "server"],
+    entryNames: ["index", "main", "server", "app", "cli"],
+    extensions: isTs
+      ? [".ts", ".mts", ".cts", ".tsx", ".js", ".mjs", ".cjs"]
+      : [".js", ".mjs", ".cjs", ".ts", ".jsx"],
+  };
+}
+
+/**
+ * Entry candidates declared in package.json (`exports["."]`, `module`, `main`,
+ * `bin`). These usually point at build output (dist/index.js), so each is also
+ * mapped back to its likely source (src/index.ts). Returned as repo-relative
+ * paths WITHOUT extension, in priority order.
+ */
+function packageEntryCandidates(pkg: Record<string, unknown>): string[] {
+  const raw: string[] = [];
+  const pick = (v: unknown): void => {
+    if (typeof v === "string") raw.push(v);
+    else if (v && typeof v === "object") {
+      const o = v as Record<string, unknown>;
+      // Conditional exports: prefer source-ish conditions, then the rest.
+      for (const k of ["source", "types", "import", "require", "default"])
+        if (k in o) pick(o[k]);
+    }
+  };
+  const exp = pkg.exports;
+  if (exp && typeof exp === "object" && "." in (exp as object))
+    pick((exp as Record<string, unknown>)["."]);
+  else pick(exp);
+  pick(pkg.source);
+  pick(pkg.module);
+  pick(pkg.main);
+  if (typeof pkg.bin === "string") pick(pkg.bin);
+  else if (pkg.bin && typeof pkg.bin === "object")
+    for (const v of Object.values(pkg.bin as object)) pick(v);
+
+  const out: string[] = [];
+  for (const r of raw) {
+    const rel = r.replace(/^\.\//, "").replace(/\.d\.[cm]?ts$/, "");
+    const noExt = rel.replace(/\.[cm]?[jt]sx?$/, "");
+    // dist/index → src/index, build/cli/main → src/cli/main, … — tried first,
+    // so a TS project compiling to lib/ still resolves to its src/ source.
+    const mapped = noExt.replace(/^(dist|build|out|lib|esm|cjs)\//, "src/");
+    if (mapped !== noExt) out.push(mapped);
+    // Pure build-output dirs are never source; lib/ often is (plain JS libs).
+    if (!/^(dist|build|out)\//.test(noExt)) out.push(noExt);
+  }
+  return [...new Set(out)];
 }
 
 // ─── discovery chain ───────────────────────────────────────────────────────
@@ -153,19 +231,26 @@ function findEntryFile(
 
 // ─── public API ────────────────────────────────────────────────────────────
 
+/** Human-readable reason detection found no entry file. */
+export function noEntryMessage(info: ProjectInfo): string {
+  return (
+    `Could not find an entry file in "${info.srcRoot}". Pass rootFile=<entry>, ` +
+    `or roots=["src/pages"] to document a folder of independent roots ` +
+    `(no single entry point).`
+  );
+}
+
 export function detectProject(workDir: string): ProjectInfo {
   const repoRoot = findPackageRoot(workDir);
-
-  const manifest = detectReact(repoRoot);
-
-  if (!manifest) {
-    throw new Error(
-      `graphdoc-mcp supports React projects only — no "react" dependency found in ` +
-        `package.json at "${repoRoot}".`,
-    );
-  }
-
   const pkg = readJson(join(repoRoot, "package.json"));
+  const manifest = detectReact(pkg) ?? detectPlain(repoRoot, pkg);
+  // Plain projects: package.json's declared entry beats naming conventions.
+  if (manifest.kind === "node")
+    manifest.entryNames = [
+      ...packageEntryCandidates(pkg),
+      ...manifest.entryNames,
+    ];
+
   if (isMonorepo(repoRoot, pkg)) {
     console.warn(
       `[graphdoc] ${repoRoot} looks like a monorepo. Detection runs against this root; ` +
@@ -181,20 +266,17 @@ export function detectProject(workDir: string): ProjectInfo {
     manifest.extensions,
   );
 
-  if (!entry) {
-    throw new Error(
-      `Could not find a React entry file in "${srcRoot}". ` +
-        `Tried: ${manifest.entryNames.map((n) => n + manifest.extensions[0]).join(", ")}`,
-    );
-  }
-
+  // No entry is not fatal: a project may be a folder of independent roots
+  // (pages/*, scripts/*) documented via `roots`. Callers that need a single
+  // entry check `rootFile` (see requireEntry in index.ts).
   return {
     repoRoot,
     srcRoot,
-    rootFile: entry.file,
-    rootName: entry.name,
+    rootFile: entry?.file ?? "",
+    rootName: entry?.name ?? "",
     docsDir: join(repoRoot, "docs"),
     language: manifest.language,
     framework: manifest.framework,
+    kind: manifest.kind,
   };
 }

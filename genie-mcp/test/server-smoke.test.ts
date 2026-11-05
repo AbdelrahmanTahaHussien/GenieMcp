@@ -152,4 +152,50 @@ describe("genie-mcp stdio server", () => {
       await transport.close();
     }
   });
+
+  it("detects a plain JS/TS Playwright POM repo and emits spec coverage through MCP", async () => {
+    workspace = await mkdtemp(path.join(tmpdir(), "genie-node-pom-"));
+    const plainRoot = path.join(workspace, "plain-app");
+    await Promise.all([
+      mkdir(path.join(workspace, "tests")),
+      mkdir(path.join(workspace, "agents", "handoff"), { recursive: true }),
+      mkdir(path.join(workspace, "docs")),
+      mkdir(path.join(plainRoot, "src", "pages"), { recursive: true }),
+      mkdir(path.join(plainRoot, "tests"), { recursive: true }),
+    ]);
+    await writeFile(path.join(workspace, "genie.config.json"), JSON.stringify({ testDir: "tests", handoffDir: "agents/handoff", graphdocDir: "docs" }));
+    await writeFile(path.join(plainRoot, "package.json"), JSON.stringify({ name: "plain-pom", main: "dist/index.js" }));
+    await writeFile(path.join(plainRoot, "tsconfig.json"), "{}");
+    await writeFile(path.join(plainRoot, "src", "index.ts"), 'import { LoginPage } from "./pages/LoginPage.js"; export { LoginPage };');
+    await writeFile(path.join(plainRoot, "src", "pages", "LoginPage.ts"), "export class LoginPage { async goto() {} }");
+    await writeFile(
+      path.join(plainRoot, "tests", "login.spec.ts"),
+      'import { test } from "@playwright/test"; import { LoginPage } from "../src/pages/LoginPage.js"; test.describe("Login", () => { test("opens", async () => { void LoginPage; }); });',
+    );
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [serverPath, "--root", workspace],
+      cwd: path.dirname(serverPath),
+      stderr: "pipe",
+    });
+    const client = new Client({ name: "genie-node-pom-smoke", version: "0.0.0" });
+    try {
+      await client.connect(transport);
+      const detection = await client.callTool({ name: "detect_project", arguments: { workDir: plainRoot } });
+      const detectionText = (detection as { content: Array<{ text: string }> }).content[0].text;
+      expect(detectionText).toContain("Node.js (TypeScript)");
+
+      const analysis = await client.callTool({ name: "analyze_project", arguments: { workDir: plainRoot, includeSpecs: true } });
+      expect(analysis.isError).not.toBe(true);
+      const testsMarkdown = (await readFile(path.join(workspace, "docs", "Tests.md"), "utf8")).replace(/\\/g, "/");
+      expect(testsMarkdown).toContain("login.spec.ts");
+      const page = (await readFile(path.join(workspace, "docs", "src", "pages", "LoginPage.md"), "utf8")).replace(/\\/g, "/");
+      expect(page).toContain("## Tested by");
+      expect(page).toContain("LoginPage");
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
 });

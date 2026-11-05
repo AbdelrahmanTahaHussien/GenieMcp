@@ -1,8 +1,20 @@
 import { readFile } from "node:fs/promises";
 import { graphdocMkdir as mkdir, graphdocWriteFile as writeFile } from "./write-guard.js";
-import { join } from "node:path";
-import type { FileInfo } from "./types.js";
-import { buildGraphData, docPathFor, safeMermaidIdent } from "./graph-core.js";
+import { basename, join, relative } from "node:path";
+import type {
+  ApiMember,
+  FileInfo,
+  GraphNode,
+  ProjectKind,
+  UnitApi,
+} from "./types.js";
+import {
+  buildGraphData,
+  computeDisplayNames,
+  docPathFor,
+  resolveChild,
+  safeMermaidIdent,
+} from "./graph-core.js";
 import { extractPropsFromSource } from "./extract-props.js";
 
 // Above this many prop-bearing classes a single Mermaid classDiagram is
@@ -51,10 +63,13 @@ export async function emitApi({
   srcRoot,
   docsDir,
   srcDocsDir,
+  projectKind,
 }: {
   cache: Map<string, FileInfo>;
   srcRoot: string;
   docsDir: string;
+  /** "node" renders classes/functions (Api.md for plain JS/TS projects). */
+  projectKind?: ProjectKind;
   /**
    * Where to READ per-unit pages from when extracting props. Defaults to
    * `<docsDir>/src`. A module-scoped run points this at the MAIN docs/src so it
@@ -62,6 +77,7 @@ export async function emitApi({
    */
   srcDocsDir?: string;
 }): Promise<void> {
+  if (projectKind === "node") return emitPlainApi({ cache, srcRoot, docsDir });
   const docsSrcDir = srcDocsDir ?? join(docsDir, "src");
   const { nodes, edges } = buildGraphData(cache, srcRoot);
 
@@ -159,5 +175,202 @@ export async function emitApi({
   await writeFile(join(docsDir, "Api.md"), md);
   console.error(
     `wrote Api.md (${withProps.length} classes with props${big ? " — split by category" : ""})`,
+  );
+}
+
+// ─── plain JS/TS projects ────────────────────────────────────────────────────
+
+const VIS = { public: "+", protected: "#", private: "-" } as const;
+
+/**
+ * Mermaid-safe type text: generics become `~T~`; anything Mermaid can't parse
+ * inside a class body (object/function/union-of-literal types) collapses to `…`.
+ */
+function mermaidType(t?: string): string {
+  if (!t) return "";
+  // `Book | undefined` / `X | null` → `Book` (optionality isn't drawn).
+  const core = t.replace(/\s*\|\s*(undefined|null)\b/g, "").trim();
+  const out = core.replace(/</g, "~").replace(/>/g, "~");
+  if (!/^[\w.$~\[\], ?]+$/.test(out) || out.length > 48) return "…";
+  return out;
+}
+
+function mermaidParam(p: string): string {
+  const [name, ...rest] = p.split(":");
+  const type = rest.join(":").trim();
+  const n =
+    name
+      .trim()
+      .replace(/[{}[\]…]/g, "")
+      .trim() || "arg";
+  return type ? `${n}: ${mermaidType(type)}` : n;
+}
+
+/** One class-diagram member line. */
+function memberLine(m: ApiMember, name = m.name): string {
+  const mod = `${m.abstract ? "*" : ""}${m.static ? "$" : ""}`;
+  const ident = name.replace(/^#/, "").replace(/[^\w$]/g, "_");
+  if (m.kind === "field") {
+    const t = mermaidType(m.type);
+    return `${VIS[m.visibility]}${t ? `${t} ` : ""}${ident}${mod}`;
+  }
+  const params = (m.params ?? []).map(mermaidParam).join(", ");
+  const ret = mermaidType(m.type);
+  return `${VIS[m.visibility]}${ident}(${params})${mod}${ret ? ` ${ret}` : ""}`;
+}
+
+type Box = {
+  id: string;
+  label: string;
+  stereotype: string;
+  category: string;
+  lines: string[];
+};
+
+/** Plain-markdown signature (per-unit pages): `login(user: TestUser): Promise<X>`. */
+export function signatureText(m: ApiMember, name = m.name): string {
+  const vis = m.visibility === "public" ? "" : `${m.visibility} `;
+  const mods = `${m.static ? "static " : ""}${m.abstract ? "abstract " : ""}`;
+  if (m.kind === "field")
+    return `${vis}${mods}${name}${m.type ? `: ${m.type}` : ""}`;
+  return `${vis}${mods}${name}(${(m.params ?? []).join(", ")})${m.type ? `: ${m.type}` : ""}`;
+}
+
+async function emitPlainApi({
+  cache,
+  srcRoot,
+  docsDir,
+}: {
+  cache: Map<string, FileInfo>;
+  srcRoot: string;
+  docsDir: string;
+}): Promise<void> {
+  const { nodes, edges } = buildGraphData(cache, srcRoot);
+  const displayNames = computeDisplayNames(cache, srcRoot);
+  const apiOf = (n: GraphNode): UnitApi | undefined =>
+    cache.get(n.file)?.units.get(n.name)?.api;
+
+  // Unit display name → id of the box it is drawn in.
+  const boxOf = new Map<string, string>();
+  const boxes = new Map<string, Box>();
+  const inherit: string[] = [];
+
+  for (const n of [...nodes].sort((a, b) =>
+    a.displayName.localeCompare(b.displayName),
+  )) {
+    const api = apiOf(n);
+    if (!api) continue;
+    if (api.shape === "function") {
+      // Functions are grouped into one «module» box per file.
+      const rel = relative(srcRoot, n.file).replace(/\\/g, "/");
+      const id = safeMermaidIdent(`mod_${rel}`);
+      const box = boxes.get(id) ?? {
+        id,
+        // File name WITH extension, so it never looks like a same-named class.
+        label: basename(n.file),
+        stereotype: "module",
+        category: n.category,
+        lines: [],
+      };
+      box.lines.push(memberLine(api.members[0], n.name));
+      boxes.set(id, box);
+      boxOf.set(n.displayName, id);
+      continue;
+    }
+    const id = safeMermaidIdent(n.displayName);
+    boxes.set(id, {
+      id,
+      label: n.displayName,
+      stereotype:
+        api.shape === "object"
+          ? "object"
+          : api.abstract
+            ? "abstract"
+            : n.category,
+      category: n.category,
+      lines: api.members.map((m) => memberLine(m)),
+    });
+    boxOf.set(n.displayName, id);
+
+    // Inheritance — resolve the superclass through the file's imports.
+    const info = cache.get(n.file)!;
+    if (api.extends) {
+      const r = resolveChild(n.file, info, api.extends, cache);
+      const parent = r && displayNames.get(`${r.file}::${r.name}`);
+      if (parent) inherit.push(`${parent}${"\u0000"}${n.displayName}`);
+    }
+  }
+
+  const inheritIds = new Set(
+    inherit.map((p) => {
+      const [parent, child] = p.split("\u0000");
+      return `${boxOf.get(child)}->${boxOf.get(parent)}`;
+    }),
+  );
+  const usesIds = new Set<string>();
+  for (const e of edges) {
+    const from = boxOf.get(e.parent);
+    const to = boxOf.get(e.child);
+    if (!from || !to || from === to) continue;
+    if (inheritIds.has(`${from}->${to}`)) continue;
+    usesIds.add(`${from}->${to}`);
+  }
+
+  const render = (only?: Set<string>): string[] => {
+    const lines = ["classDiagram", "    direction LR"];
+    for (const b of boxes.values()) {
+      if (only && !only.has(b.id)) continue;
+      lines.push(`    class ${b.id}["${b.label}"] {`);
+      lines.push(`        <<${b.stereotype}>>`);
+      for (const l of b.lines) lines.push(`        ${l}`);
+      lines.push(`    }`);
+    }
+    for (const p of inheritIds) {
+      const [child, parent] = p.split("->");
+      if (only && !only.has(child)) continue;
+      lines.push(`    ${parent} <|-- ${child}`);
+    }
+    for (const p of usesIds) {
+      const [from, to] = p.split("->");
+      if (only && !only.has(from)) continue;
+      lines.push(`    ${from} --> ${to}`);
+    }
+    return lines;
+  };
+
+  const intro = `# API
+
+> Class diagram of the project's public shape: every **class** with its fields and methods, **object** literals with their members, and standalone **functions** grouped into one «module» box per file. \`+\` public · \`#\` protected · \`-\` private · \`*\` abstract · \`$\` static.
+>
+> Arrows: \`<|--\` extends · \`-->\` uses.`;
+
+  let body: string;
+  const big = boxes.size > SPLIT_CLASSES;
+  if (!boxes.size) {
+    body = "*(no classes, objects or functions found in the analyzed graph)*";
+  } else if (!big) {
+    body = "```mermaid\n" + render().join("\n") + "\n```";
+  } else {
+    const cats = [
+      ...new Set([...boxes.values()].map((b) => b.category)),
+    ].sort();
+    const sections = [
+      `> ⚠️ **${boxes.size} boxes** — too many for one readable class diagram, so it is split by category below.`,
+    ];
+    for (const cat of cats) {
+      const ids = new Set(
+        [...boxes.values()].filter((b) => b.category === cat).map((b) => b.id),
+      );
+      sections.push(
+        `## ${cat} (${ids.size})\n\n\`\`\`mermaid\n${render(ids).join("\n")}\n\`\`\``,
+      );
+    }
+    body = sections.join("\n\n");
+  }
+
+  await mkdir(docsDir, { recursive: true });
+  await writeFile(join(docsDir, "Api.md"), `${intro}\n\n${body}\n`);
+  console.error(
+    `wrote Api.md (${boxes.size} boxes, ${inheritIds.size} extends, ${usesIds.size} uses${big ? " — split by category" : ""})`,
   );
 }

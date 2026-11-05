@@ -1,6 +1,6 @@
 # Genie MCP
 
-One MCP server combines AutoMateGenie QA tools and GraphDoc codebase navigation. Add the consumer MCP config and `genie.config.json` to a repository; the GraphDoc module is React-focused, while Genie configuration and handoffs are repository-relative.
+One MCP server combines AutoMateGenie QA tools and GraphDoc codebase navigation. Add the consumer MCP config and `genie.config.json` to a repository. GraphDoc analyzes React applications and plain JavaScript/TypeScript projects, including Node.js services, libraries, CLIs, and Playwright Page Object Model repositories.
 
 ## Install
 
@@ -84,6 +84,12 @@ GraphDoc tools retain their original names: `detect_project`, `analyze_project`,
 Prompts: `genie_orchestrator`, `genie_explorer`, `genie_generator`, `genie_executor`. Skills are exposed at `skill://executor`, `skill://explorer`, `skill://generator`, `skill://import-graph`, and `skill://test-design`.
 
 The Explorer workflow uses GraphDoc's `onboard`, `query_docs`, `get_unit`, and `read_unit_source` tools to locate relevant files, then checks current source/tests for behavioral evidence.
+
+## Playwright and Plain JS/TS Projects
+
+GraphDoc detects non-React JavaScript/TypeScript projects from `package.json` and follows ESM, CommonJS, NodeNext `.js` specifiers, and application wiring. For Page Object Model repositories, set `includeSpecs: true` on `analyze_project` or `generate_graphdoc`; GraphDoc emits `Tests.md`, per-unit “Tested by” sections, spec pages, and spec links in the dependency diagrams. This is import-based coverage mapping, not line coverage.
+
+For repositories with independent roots and no single entry point, pass `roots` with a value such as `src/pages` to `analyze_project` or `generate_graphdoc`. The selected roots and spec-coverage setting are persisted in `graphdocDir/graphdoc.json` and reused by `sync`.
 
 ## Handoff Shape Notes
 

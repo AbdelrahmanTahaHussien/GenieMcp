@@ -1,11 +1,11 @@
 /**
  * types.ts — shared contracts used by the analyzer and emitters.
  *
- * A React project is modeled as "modules" (files), "units" (the things defined
- * in them — components, hooks/functions, classes), and "edges" (import/use
- * relationships between units). JSX parsing lives in react-analyzer.ts;
- * everything downstream — graph building, doc emission, onboarding — works on
- * these types.
+ * A project (React app or plain JS/TS / Node) is modeled as "modules" (files),
+ * "units" (the things defined in them — components, hooks/functions, classes),
+ * and "edges" (import/use relationships between units). Parsing lives in
+ * react-analyzer.ts; everything downstream — graph building, doc emission,
+ * onboarding — works on these types.
  */
 
 // ─── core graph types ──────────────────────────────────────────────────────
@@ -38,13 +38,42 @@ export type UnitInfo = {
    * don't need a separate re-parse of the source file.
    */
   props?: string[];
+  /**
+   * Plain JS/TS projects: the unit's public shape — class methods/fields,
+   * function parameters, object-literal members — rendered in Api.md.
+   */
+  api?: UnitApi;
+};
+
+/** One method / field / function signature for Api.md. */
+export type ApiMember = {
+  name: string;
+  kind: "method" | "field";
+  /** Parameter texts (`user: TestUser`); methods only. */
+  params?: string[];
+  /** Field type or method return type, as written in source. */
+  type?: string;
+  visibility: "public" | "protected" | "private";
+  static?: boolean;
+  abstract?: boolean;
+};
+
+export type UnitApi = {
+  /** "class" box, a "function" signature, or an object literal's "members". */
+  shape: "class" | "function" | "object";
+  members: ApiMember[];
+  /** Local name of the superclass (`class A extends B` → "B"). */
+  extends?: string;
+  /** Local names of implemented interfaces. */
+  implements?: string[];
+  abstract?: boolean;
 };
 
 export type UnitKind =
   | "component" // React component (returns JSX)
   | "class" // TS/JS class
   | "function" // standalone function / hook
-  | "other";
+  | "other"; // module-level object / instance (e.g. `const app = express()`)
 
 /** All information extracted from one source file. */
 export type FileInfo = {
@@ -68,6 +97,13 @@ export type FileInfo = {
    * Resolved into real edges after the whole cache is built.
    */
   pendingLazy: Array<{ unit: string; file: string }>;
+  /**
+   * Names used by module-level statements that belong to no unit (e.g.
+   * `bootstrap()`, `createRoot(…).render(<App />)`, `app.listen()`). Only
+   * consumed when the entry file has no unit of its own and a synthetic root
+   * unit is built for it (see analyzer.ensureRootUnit).
+   */
+  moduleUsed?: Set<string>;
 };
 
 // ─── tree + graph ─────────────────────────────────────────────────────────
@@ -94,18 +130,22 @@ export type GraphEdge = { parent: string; child: string };
 
 // ─── project detection ─────────────────────────────────────────────────────
 
+/** "react" = React app (JSX components); "node" = plain JS/TS (library, CLI, server). */
+export type ProjectKind = "react" | "node";
+
 export type ProjectInfo = {
   repoRoot: string;
   srcRoot: string;
-  /** Absolute path to the "root" entry file (best-effort). */
+  /** Absolute path to the "root" entry file (best-effort; "" when none found). */
   rootFile: string;
   /** Name of the root unit (component / main function / etc.). */
   rootName: string;
   docsDir: string;
   /** "js" | "ts" */
   language: string;
-  /** Display name of the framework detected (e.g. "React (Vite)"). */
+  /** Display name of the framework detected (e.g. "React (Vite)", "Express"). */
   framework: string;
+  kind: ProjectKind;
 };
 
 // ─── analysis result ───────────────────────────────────────────────────────
@@ -120,12 +160,39 @@ export type AnalyzeResult = {
     language: string;
     framework: string;
   };
+  /** Spec coverage — present only when includeSpecs is enabled. */
+  specs?: SpecSummary;
+};
+
+// ─── specs ─────────────────────────────────────────────────────────────────
+
+/** One analyzed spec/test file. */
+export type SpecFile = {
+  /** Absolute path of the spec file. */
+  file: string;
+  /** Test case titles, suite-prefixed ("UserService › returns users"). */
+  tests: string[];
+  /** First-party units the spec imports (resolved to their defining file). */
+  targets: Array<{ file: string; name: string }>;
+  /** First-party source files imported by the spec but outside the analyzed graph. */
+  outsideGraph: string[];
+};
+
+export type SpecSummary = {
+  files: number;
+  tests: number;
+  /** Units exercised by at least one spec / total units in the graph. */
+  coveredUnits: number;
+  totalUnits: number;
 };
 
 // ─── onboarding ────────────────────────────────────────────────────────────
 
 export type OnboardingContext = {
-  projectInfo: ProjectInfo;
+  projectInfo: Omit<ProjectInfo, "kind"> & {
+    /** Multi-root mode: the configured roots (repo-relative folders/files). */
+    roots?: string[];
+  };
   stats: AnalyzeResult["stats"];
   /** Top-level tree (root → direct children display names). */
   topLevel: string[];
@@ -142,4 +209,6 @@ export type OnboardingContext = {
   edgeCount: number;
   /** Display name → wiki-link string (path-qualified for colliding units). */
   wikiLinks: Map<string, string>;
+  /** Spec coverage — present only when includeSpecs is enabled. */
+  specs?: SpecSummary;
 };
