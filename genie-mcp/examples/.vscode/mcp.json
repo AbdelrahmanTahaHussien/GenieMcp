@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "genie-mcp": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@<org>/genie-mcp", "--root", "${workspaceFolder}"]
+    }
+  }
+}

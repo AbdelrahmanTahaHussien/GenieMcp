@@ -1,0 +1,41 @@
+{
+  "name": "@your-org/genie-mcp",
+  "version": "0.1.0",
+  "description": "Combined AutoMateGenie and GraphDoc MCP server",
+  "type": "module",
+  "main": "dist/server.js",
+  "bin": {
+    "genie-mcp": "dist/server.js"
+  },
+  "files": [
+    "dist",
+    "prompts",
+    "skills",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "pretest": "npm run build && npm run typecheck",
+    "test": "vitest run",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "oxc-parser": "^0.133.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "prettier": "^3.9.4",
+    "typescript": "^5.0.0",
+    "vitest": "^2.1.0"
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "spec": "tests/kan/KAN-19.home.spec.ts",
+  "finishedAt": "2026-06-10T00:00:00.000Z",
+  "success": true,
+  "attempts": [
+    {
+      "attempt": 1,
+      "success": false,
+      "durationMs": 22300,
+      "passed": 13,
+      "failed": 2,
+      "categories": {
+        "locator": 2
+      },
+      "failures": [
+        {
+          "testTitle": "TC001 – home page loads with all main elements visible",
+          "category": "locator",
+          "errorMessage": "strict mode violation: getByText('celfronteders') resolved to 2 elements (header span + footer paragraph)"
+        },
+        {
+          "testTitle": "TC008 – header shows logo icon and site name \"celfronteders\"",
+          "category": "locator",
+          "errorMessage": "strict mode violation: getByText('celfronteders') resolved to 2 elements (header span + footer paragraph)"
+        }
+      ],
+      "fixesApplied": []
+    },
+    {
+      "attempt": 2,
+      "success": true,
+      "durationMs": 23300,
+      "passed": 15,
+      "failed": 0,
+      "categories": {},
+      "failures": [],
+      "fixesApplied": [
+        {
+          "type": "locator",
+          "file": "pages/home.page.ts",
+          "description": "Scoped siteName locator to 'header' to avoid strict-mode conflict with footer text: changed getByText('celfronteders') to page.locator('header').getByText('celfronteders')"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "passed": 15,
+    "failed": 0,
+    "categories": {}
+  }
+}

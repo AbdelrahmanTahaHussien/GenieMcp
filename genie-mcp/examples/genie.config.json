@@ -1,0 +1,6 @@
+{
+  "testDir": "tests",
+  "handoffDir": "agents/handoff",
+  "graphdocDir": "docs",
+  "conventions": {}
+}

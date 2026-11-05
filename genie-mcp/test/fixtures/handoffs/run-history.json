@@ -1,0 +1,10 @@
+[
+  {
+    "finishedAt": "2026-06-10T00:00:00.000Z",
+    "spec": "tests/kan/KAN-19.home.spec.ts",
+    "passed": 15,
+    "failed": 0,
+    "attempts": 2,
+    "success": true
+  }
+]
