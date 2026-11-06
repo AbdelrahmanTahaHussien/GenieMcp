@@ -1,12 +1,14 @@
 import { mkdir, writeFile, rm, readFile, readdir } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
-import type { FileInfo } from "./types.js";
+import type { FileInfo, SpecFile } from "./types.js";
 import { resolveChild, docPathFor, computeDisplayNames } from "./graph-core.js";
 import {
   readState,
   docsMapFromState,
   manualEdgesFromState,
 } from "./state-store.js";
+import { specNames, specsByUnit } from "./spec-analyzer.js";
+import { signatureText } from "./emit-api.js";
 
 /** An edge target plus how it was discovered. */
 type Edge = {
@@ -24,6 +26,8 @@ type Edge = {
 
 const DOCS_START = "<!-- DOCS:START -->";
 const DOCS_END = "<!-- DOCS:END -->";
+/** Max test titles listed per spec on a unit page (Tests.md lists them all). */
+const MAX_TESTS_PER_SPEC = 30;
 const DOCS_PLACEHOLDER =
   "> _Add a description here. This block is preserved across regenerations._";
 
@@ -145,9 +149,7 @@ async function readExistingDocs(
 }
 
 /** Read persisted manual links from every page's `manualUses` frontmatter. */
-async function readManualEdges(
-  docsSrcDir: string,
-): Promise<{
+async function readManualEdges(docsSrcDir: string): Promise<{
   edges: Array<{ from: string; to: string }>;
   ownByPath: Map<string, string[]>;
 }> {
@@ -212,6 +214,7 @@ export async function emitFolderDocs({
   repoRoot,
   rebuild = false,
   only,
+  specs,
 }: {
   cache: Map<string, FileInfo>;
   srcRoot: string;
@@ -226,6 +229,8 @@ export async function emitFolderDocs({
    * without re-emitting the whole docs/src tree.
    */
   only?: Set<string>;
+  /** Analyzed spec files (includeSpecs) → adds a "Tested by" section per unit. */
+  specs?: SpecFile[];
 }): Promise<void> {
   const docsSrcDir = join(docsDir, "src");
 
@@ -268,6 +273,10 @@ export async function emitFolderDocs({
     displayNames.get(`${file}::${name}`) ?? name;
 
   const nodes = new Map<string, Node>(); // key = `${file}::${name}`
+
+  // unit key → specs that import it; spec file → its page name / wiki-link.
+  const testedByUnit = specsByUnit(specs ?? []);
+  const specName = specNames(specs ?? [], repoRoot);
 
   for (const [file, info] of cache) {
     for (const [name, unit] of info.units) {
@@ -396,6 +405,16 @@ export async function emitFolderDocs({
       lines.push("manualUses:");
       for (const n of ownManual) lines.push(`  - ${n}`);
     }
+    const testedBy = testedByUnit.get(`${node.file}::${node.name}`) ?? [];
+    if (specs) {
+      if (testedBy.length > 0) {
+        lines.push("testedBy:");
+        for (const sp of testedBy)
+          lines.push(`  - ${relative(repoRoot, sp.file)}`);
+      } else {
+        lines.push("testedBy: []");
+      }
+    }
     lines.push("---");
     lines.push("");
     lines.push(`# ${node.displayName}`);
@@ -413,17 +432,43 @@ export async function emitFolderDocs({
     let props = propsFromDocsBody(docsBody);
     if (props.length === 0)
       props = cache.get(node.file)?.units.get(node.name)?.props ?? [];
-    lines.push("## Props");
-    lines.push("");
-    if (props.length === 0) {
-      lines.push("- *(no props detected)*");
+    // Plain JS/TS units: their signatures (methods / fields / parameters)
+    // instead of React props.
+    const api = cache.get(node.file)?.units.get(node.name)?.api;
+    if (api && props.length === 0) {
+      lines.push("## API");
+      lines.push("");
+      if (api.extends || api.implements?.length)
+        lines.push(
+          `*${[
+            api.extends ? `extends \`${api.extends}\`` : "",
+            api.implements?.length
+              ? `implements ${api.implements.map((i) => `\`${i}\``).join(", ")}`
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" · ")}*`,
+          "",
+        );
+      if (api.members.length === 0) lines.push("- *(no members)*");
+      for (const m of api.members)
+        lines.push(
+          `- \`${signatureText(m, api.shape === "function" ? node.name : m.name)}\``,
+        );
+      lines.push("");
     } else {
-      for (const p of props) {
-        const isCallback = /^on[A-Z]/.test(p);
-        lines.push(`- \`${p}${isCallback ? "()" : ""}\``);
+      lines.push("## Props");
+      lines.push("");
+      if (props.length === 0) {
+        lines.push("- *(no props detected)*");
+      } else {
+        for (const p of props) {
+          const isCallback = /^on[A-Z]/.test(p);
+          lines.push(`- \`${p}${isCallback ? "()" : ""}\``);
+        }
       }
+      lines.push("");
     }
-    lines.push("");
 
     lines.push("## Uses");
     lines.push("");
@@ -442,11 +487,31 @@ export async function emitFolderDocs({
     }
     lines.push("");
 
+    if (specs) {
+      lines.push("## Tested by");
+      lines.push("");
+      if (testedBy.length === 0) {
+        lines.push("- *(no spec imports this unit)*");
+      }
+      for (const sp of testedBy) {
+        lines.push(
+          `- 🧪 ${specName.get(sp.file)!.link} (${sourceLinkFor(docFile, sp.file, repoRoot)}) — ${sp.tests.length} test case(s)`,
+        );
+        for (const t of sp.tests.slice(0, MAX_TESTS_PER_SPEC))
+          lines.push(`  - ${t}`);
+        if (sp.tests.length > MAX_TESTS_PER_SPEC)
+          lines.push(
+            `  - *…${sp.tests.length - MAX_TESTS_PER_SPEC} more in [[Tests]]*`,
+          );
+      }
+      lines.push("");
+    }
+
     await writeFile(docFile, lines.join("\n"));
     written++;
   }
 
-  console.log(
+  console.error(
     `wrote ${written} component docs to docs/src/ (preserved ${preserved} hand-written description blocks${rebuild ? "" : ", additive"})`,
   );
 }

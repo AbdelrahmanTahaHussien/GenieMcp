@@ -1,24 +1,32 @@
 /**
- * analyzer.ts — React project core.
+ * analyzer.ts — project core (React apps and plain JS/TS projects).
  *
  * Works by:
- * 1. Walking the source tree for React-app files (.jsx/.tsx/.js/.ts)
- * 2. Parsing each file with the React analyzer
+ * 1. Following imports from the entry file (or walking the source tree) for
+ *    .jsx/.tsx/.js/.ts files — spec/test files are never part of the graph
+ * 2. Parsing each file with the per-file analyzer
  * 3. Building the dependency graph and tree using the shared types
  *
  * The emitters (emit-*.ts) consume a `components` field, so `analyze()`
  * bridges the `units` field to it.
  */
 
-import { existsSync, readdirSync, statSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
-import { join, relative, basename } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { readFile, readdir, rm } from "node:fs/promises";
+import { join, relative, basename, dirname, isAbsolute } from "node:path";
 import {
   analyzeReactFile,
+  fileToUnitName,
   isReactSourceFile,
   type AnalyzeOptions,
 } from "./react-analyzer.js";
 import { loadPathAliases, type PathAliases } from "./tsconfig-paths.js";
+import {
+  collectSpecs,
+  crawlFiles,
+  isSpecFile,
+  specNames,
+} from "./spec-analyzer.js";
 import { getCachedFileInfo, storeFileInfo } from "./file-cache.js";
 import type {
   FileInfo,
@@ -27,6 +35,9 @@ import type {
   GraphEdge,
   AnalyzeResult,
   OnboardingContext,
+  ProjectKind,
+  SpecFile,
+  SpecSummary,
   UnitKind,
 } from "./types.js";
 import {
@@ -45,6 +56,8 @@ import { emitMermaid } from "./emit-mermaid.js";
 import { emitGraph } from "./emit-graph.js";
 import { emitApi } from "./emit-api.js";
 import { emitMatrix } from "./emit-matrix.js";
+import { emitTests, emitSpecPages, TESTS_FILENAME } from "./emit-tests.js";
+import { SPECS_DIRNAME } from "./spec-analyzer.js";
 
 export type { FileInfo, Tree, GraphNode, GraphEdge };
 // Re-exported so existing importers (index.ts) keep working after consolidation.
@@ -52,61 +65,9 @@ export { resolveUnit, buildGraphData, categoryFor } from "./graph-core.js";
 
 // ─── file crawling ─────────────────────────────────────────────────────────
 
-const IGNORE_DIRS = new Set([
-  "node_modules",
-  ".git",
-  "dist",
-  "build",
-  "out",
-  ".next",
-  ".nuxt",
-  "__pycache__",
-  ".venv",
-  "venv",
-  "env",
-  "target",
-  "vendor",
-  ".gradle",
-  ".idea",
-  ".vscode",
-  "coverage",
-  ".cache",
-]);
-
-/** Walk srcRoot and return all analyzable source files. */
+/** Walk srcRoot and return all analyzable (non-spec) source files. */
 function crawlSourceFiles(srcRoot: string): string[] {
-  const results: string[] = [];
-
-  function walk(dir: string) {
-    // withFileTypes avoids a statSync per entry (halves syscalls on big trees).
-    let entries: import("node:fs").Dirent[];
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      if (IGNORE_DIRS.has(e.name)) continue;
-      const full = join(dir, e.name);
-      if (e.isDirectory()) {
-        walk(full);
-      } else if (e.isFile() && isReactSourceFile(full)) {
-        results.push(full);
-      } else if (e.isSymbolicLink()) {
-        // Preserve old behavior for symlinks (statSync followed them).
-        try {
-          const st = statSync(full);
-          if (st.isDirectory()) walk(full);
-          else if (st.isFile() && isReactSourceFile(full)) results.push(full);
-        } catch {
-          /* ignore unreadable */
-        }
-      }
-    }
-  }
-
-  walk(srcRoot);
-  return results;
+  return crawlFiles(srcRoot, (f) => isReactSourceFile(f) && !isSpecFile(f));
 }
 
 // ─── cache building ────────────────────────────────────────────────────────
@@ -125,7 +86,7 @@ async function processFileInto(
   analyzeOpts?: AnalyzeOptions,
 ): Promise<void> {
   if (cache.has(file)) return;
-  if (!isReactSourceFile(file)) return;
+  if (!isReactSourceFile(file) || isSpecFile(file)) return;
 
   // Session cache: reuse the parse from a previous tool call when the file is
   // unchanged on disk (mtime+size). Only changed files pay read+parse again.
@@ -264,6 +225,181 @@ function resolveLazyEdges(cache: Map<string, FileInfo>): void {
       }
     }
   }
+}
+
+/**
+ * Make sure the root unit exists. A plain JS/TS entry (`index.ts` that calls
+ * `app.listen()`, `main.ts` that calls `bootstrap()`, a library barrel that
+ * only re-exports) usually defines no unit named after the file, which would
+ * leave the tree empty. In that case a synthetic module-level unit is added
+ * whose edges are: module-level statements' usages + every unit the file
+ * exports (own units, named re-exports, `export *` barrels).
+ *
+ * The root file's FileInfo is replaced with a copy in THIS cache only — the
+ * shared session file-cache entry is never mutated.
+ */
+export function ensureRootUnit(
+  cache: Map<string, FileInfo>,
+  rootFile: string,
+  rootName: string,
+): void {
+  const info = cache.get(rootFile);
+  if (!info || info.units.has(rootName)) return;
+
+  const imports = new Map(info.imports);
+  const used = new Set<string>(info.moduleUsed ?? []);
+  for (const name of info.units.keys()) used.add(name);
+  for (const [name, re] of info.reExports) {
+    if (re.file === rootFile) used.add(re.importedName);
+    else if (!imports.has(name)) {
+      imports.set(name, re);
+      used.add(name);
+    }
+  }
+  for (const wf of info.wildcardReExports) {
+    const target = cache.get(wf);
+    if (!target) continue;
+    for (const name of [...target.units.keys(), ...target.reExports.keys()]) {
+      if (name === "default" || imports.has(name) || info.units.has(name))
+        continue;
+      imports.set(name, { file: wf, importedName: name });
+      used.add(name);
+    }
+  }
+  used.delete(rootName);
+  if (!used.size) return;
+
+  cache.set(rootFile, {
+    ...info,
+    imports,
+    units: new Map(info.units).set(rootName, {
+      used,
+      description: null,
+      kind: "function",
+    }),
+  });
+}
+
+// ─── multi-root mode ───────────────────────────────────────────────────────
+//
+// For projects with no single entry point — a folder of pages, page objects,
+// scripts or lambdas. Every file DIRECTLY inside a roots folder (or listed
+// explicitly) is always a root — `pages/*` means every page, even when one page
+// navigates to another. Files in SUBfolders are roots only if no other
+// candidate imports them, so a page's private fragments stay nested under it.
+
+/** One root of a multi-root project. */
+export type RootUnit = { file: string; name: string };
+
+/** Expand `roots` (repo-relative or absolute folders/files) into source files. */
+export function expandRoots(roots: string[], repoRoot: string): string[] {
+  const files = new Set<string>();
+  for (const r of roots) {
+    const abs = isAbsolute(r) ? r : join(repoRoot, r);
+    let isDir: boolean;
+    try {
+      isDir = statSync(abs).isDirectory();
+    } catch {
+      throw new Error(`Root "${r}" does not exist (resolved to ${abs}).`);
+    }
+    if (isDir) for (const f of crawlSourceFiles(abs)) files.add(f);
+    else if (isReactSourceFile(abs) && !isSpecFile(abs)) files.add(abs);
+  }
+  return [...files].sort();
+}
+
+/** Files that are always roots: directly inside a roots folder, or listed explicitly. */
+export function pinnedRootFiles(
+  roots: string[],
+  repoRoot: string,
+  files: string[],
+): Set<string> {
+  const abs = roots.map((r) =>
+    (isAbsolute(r) ? r : join(repoRoot, r)).replace(/[/\\]+$/, ""),
+  );
+  const set = new Set(abs);
+  return new Set(files.filter((f) => set.has(f) || set.has(dirname(f))));
+}
+
+/** Tree root label for a set of roots: `pages`, or `pages + jobs`. */
+export function rootsLabel(roots: string[]): string {
+  return roots.map((r) => basename(r.replace(/[/\\]+$/, "")) || r).join(" + ");
+}
+
+/**
+ * Pick the root units among `files` (already analyzed into `cache`): `pinned`
+ * files plus files not imported by another candidate; per file its default
+ * export, else every unit nothing else in the file uses. A file with no units at all (a script that
+ * just runs code) gets a synthetic module root, like a single entry would.
+ */
+export function pickRootUnits(
+  cache: Map<string, FileInfo>,
+  files: string[],
+  srcRoot: string,
+  pinned: Set<string> = new Set(),
+): RootUnit[] {
+  const candidates = files.filter((f) => cache.has(f));
+  const reached = new Set<string>();
+  for (const f of candidates)
+    for (const g of subsetReachableFrom(cache, f).keys())
+      if (g !== f) reached.add(g);
+  let rootFiles = candidates.filter((f) => pinned.has(f) || !reached.has(f));
+  if (!rootFiles.length) rootFiles = candidates; // everything in one cycle
+
+  const out: RootUnit[] = [];
+  for (const file of rootFiles) {
+    const info = cache.get(file)!;
+    if (info.defaultExport && info.units.has(info.defaultExport)) {
+      out.push({ file, name: info.defaultExport });
+      continue;
+    }
+    const usedLocally = new Set(
+      [...info.units.values()].flatMap((u) => [...u.used]),
+    );
+    const top = [...info.units.keys()].filter((n) => !usedLocally.has(n));
+    if (top.length) {
+      for (const name of top) out.push({ file, name });
+      continue;
+    }
+    const name = fileToUnitName(file, srcRoot);
+    ensureRootUnit(cache, file, name);
+    if (cache.get(file)!.units.has(name)) out.push({ file, name });
+  }
+  return out;
+}
+
+/** Analyze every file under the roots (and everything they import). */
+export async function buildRootsCache(
+  files: string[],
+  srcRoot: string,
+  aliases?: PathAliases,
+  analyzeOpts?: AnalyzeOptions,
+): Promise<Map<string, FileInfo>> {
+  const cache = new Map<string, FileInfo>();
+  await extendCache(cache, files, srcRoot, aliases, analyzeOpts);
+  return cache;
+}
+
+/** Children of the label root: one independent subtree per root unit. */
+export async function buildMultiTree(
+  roots: RootUnit[],
+  cache: Map<string, FileInfo>,
+  manual?: ManualTreeCtx,
+  displayNames?: Map<string, string>,
+): Promise<Tree> {
+  const out: Tree = {};
+  for (const r of roots) {
+    const label = displayNames?.get(`${r.file}::${r.name}`) ?? r.name;
+    out[label] = await buildTree(
+      r.file,
+      r.name,
+      new Set(),
+      cache,
+      manual,
+      displayNames,
+    );
+  }
+  return out;
 }
 
 // ─── tree building ─────────────────────────────────────────────────────────
@@ -464,6 +600,41 @@ export async function readDocsNameIndex(
   return map;
 }
 
+/**
+ * Hang a `🧪 <spec>` leaf under every tested unit in a tree (wherever it
+ * appears), so specs show up connected to the units they import. Mutates and
+ * returns `tree`; tree keys are display names.
+ */
+export function attachSpecsToTree(
+  tree: Tree,
+  cache: Map<string, FileInfo>,
+  srcRoot: string,
+  repoRoot: string,
+  specs: SpecFile[],
+): Tree {
+  if (!specs.length) return tree;
+  const displayNames = computeDisplayNames(cache, srcRoot);
+  const names = specNames(specs, repoRoot);
+  const byLabel = new Map<string, string[]>();
+  for (const s of specs) {
+    for (const t of s.targets) {
+      const label = displayNames.get(`${t.file}::${t.name}`) ?? t.name;
+      const leaf = `🧪 ${names.get(s.file)!.name}`;
+      const arr = byLabel.get(label) ?? [];
+      if (!arr.includes(leaf)) arr.push(leaf);
+      byLabel.set(label, arr);
+    }
+  }
+  const visit = (node: Tree): void => {
+    for (const [label, children] of Object.entries(node)) {
+      visit(children);
+      for (const leaf of byLabel.get(label) ?? []) children[leaf] = {};
+    }
+  };
+  visit(tree);
+  return tree;
+}
+
 export function printIndented(
   name: string,
   children: Tree,
@@ -498,16 +669,9 @@ export function printIndented(
 export function buildOnboardingContext(
   cache: Map<string, FileInfo>,
   srcRoot: string,
-  projectInfo: {
-    repoRoot: string;
-    srcRoot: string;
-    rootFile: string;
-    rootName: string;
-    docsDir: string;
-    language: string;
-    framework: string;
-  },
+  projectInfo: OnboardingContext["projectInfo"],
   treeData: Tree,
+  specs?: SpecSummary,
 ): OnboardingContext {
   const { nodes, edges } = buildGraphData(cache, srcRoot);
   const displayNames = computeDisplayNames(cache, srcRoot);
@@ -517,8 +681,9 @@ export function buildOnboardingContext(
     nodes.map((n) => [n.displayName, wikiLinkFor(n, srcRoot)]),
   );
 
-  // Top-level children of root (tree keys are already display names).
-  const topLevel = Object.keys(treeData);
+  // Top-level children of root (tree keys are already display names; 🧪 spec
+  // leaves are not units).
+  const topLevel = Object.keys(treeData).filter((k) => !k.startsWith("🧪 "));
 
   // Hotspots: units used by the most parents (keyed by display name).
   const usedByCount = new Map<string, number>();
@@ -566,6 +731,25 @@ export function buildOnboardingContext(
     documented,
     edgeCount: edges.length,
     wikiLinks,
+    specs,
+  };
+}
+
+/** Coverage numbers for ONBOARDING / tool output. */
+export function summarizeSpecs(
+  specs: SpecFile[],
+  cache: Map<string, FileInfo>,
+): SpecSummary {
+  const covered = new Set(
+    specs.flatMap((s) => s.targets.map((t) => `${t.file}::${t.name}`)),
+  );
+  let totalUnits = 0;
+  for (const info of cache.values()) totalUnits += info.units.size;
+  return {
+    files: specs.length,
+    tests: specs.reduce((n, s) => n + s.tests.length, 0),
+    coveredUnits: covered.size,
+    totalUnits,
   };
 }
 
@@ -582,6 +766,15 @@ export async function analyze(
     framework: string;
     language: string;
     styledComponents?: boolean;
+    /** "node" = plain JS/TS project (see AnalyzeOptions.projectKind). */
+    projectKind?: ProjectKind;
+    /** Scan spec/test files → "Tested by" sections + Tests.md (for testers). */
+    includeSpecs?: boolean;
+    /**
+     * Multi-root mode: folders/files of independent roots (no single entry).
+     * When set, rootFile is ignored and rootName labels the tree root.
+     */
+    roots?: string[];
     /** Wipe docs/src before regenerating (default: additive — keep other pages). */
     rebuild?: boolean;
   },
@@ -595,13 +788,20 @@ export async function analyze(
     framework,
     language,
     styledComponents,
+    projectKind,
+    includeSpecs,
+    roots,
     rebuild,
   } = opts;
 
   const aliases = loadPathAliases(repoRoot);
-  const cache = await buildCache(srcRoot, rootFile, aliases, {
-    styledComponents,
-  });
+  const analyzeOpts = { styledComponents, projectKind };
+  const rootFiles = roots?.length ? expandRoots(roots, repoRoot) : null;
+  if (rootFiles && !rootFiles.length)
+    throw new Error(`No source files found under roots: ${roots!.join(", ")}`);
+  const cache = rootFiles
+    ? await buildRootsCache(rootFiles, srcRoot, aliases, analyzeOpts)
+    : await buildCache(srcRoot, rootFile, aliases, analyzeOpts);
   const manualEdges = await readManualTree(docsDir);
   // Seed manual-link targets (and their deps) into the cache so the tree can
   // expand subtrees that the root doesn't statically import (e.g. AEM pages).
@@ -609,29 +809,51 @@ export async function analyze(
   const seeds = [...new Set([...manualEdges.values()].flat())]
     .map((n) => docsIndex.get(n))
     .filter((f): f is string => !!f);
-  await extendCache(cache, seeds, srcRoot, aliases, { styledComponents });
+  await extendCache(cache, seeds, srcRoot, aliases, analyzeOpts);
+  const rootUnits = rootFiles
+    ? pickRootUnits(
+        cache,
+        rootFiles,
+        srcRoot,
+        pinnedRootFiles(roots!, repoRoot, rootFiles),
+      )
+    : null;
+  if (!rootUnits) ensureRootUnit(cache, rootFile, rootName);
   const displayNames = computeDisplayNames(cache, srcRoot);
-  const treeData = await buildTree(
-    rootFile,
-    rootName,
-    new Set(),
-    cache,
-    {
-      edges: manualEdges,
-      nameToFile: buildNameIndex(cache),
-    },
-    displayNames,
-  );
+  const manual = { edges: manualEdges, nameToFile: buildNameIndex(cache) };
+  const treeData = rootUnits
+    ? await buildMultiTree(rootUnits, cache, manual, displayNames)
+    : await buildTree(
+        rootFile,
+        rootName,
+        new Set(),
+        cache,
+        manual,
+        displayNames,
+      );
+  const specs = includeSpecs
+    ? await collectSpecs({ repoRoot, docsDir, cache, aliases })
+    : undefined;
+
   const tree: Tree = { [rootName]: treeData };
+  if (specs) attachSpecsToTree(tree, cache, srcRoot, repoRoot, specs);
   const treeText = printIndented(rootName, treeData);
 
   // Emitters consume the canonical cache (units / reExports) directly — no
   // legacy `components` bridge anymore (see graph-core.ts).
-  await emitFolderDocs({ cache, srcRoot, docsDir, repoRoot, rebuild });
+  await emitFolderDocs({ cache, srcRoot, docsDir, repoRoot, rebuild, specs });
   await emitMermaid({ tree, docsDir });
-  await emitGraph({ cache, srcRoot, docsDir });
-  await emitApi({ cache, srcRoot, docsDir });
+  await emitGraph({ cache, srcRoot, docsDir, repoRoot, specs });
+  await emitApi({ cache, srcRoot, docsDir, projectKind });
   await emitMatrix({ cache, srcRoot, docsDir });
+  if (specs) {
+    await emitTests({ cache, srcRoot, docsDir, repoRoot, specs });
+    await emitSpecPages({ cache, srcRoot, docsDir, repoRoot, specs });
+  } else {
+    // Specs switched off → drop stale Tests.md + spec pages from an earlier run.
+    await rm(join(docsDir, TESTS_FILENAME), { force: true });
+    await rm(join(docsDir, SPECS_DIRNAME), { recursive: true, force: true });
+  }
 
   const { nodes, edges, collisions } = buildGraphData(cache, srcRoot);
 
@@ -669,5 +891,6 @@ export async function analyze(
     treeText,
     cache,
     stats: { files: cache.size, units: nodes.length, language, framework },
+    ...(specs ? { specs: summarizeSpecs(specs, cache) } : {}),
   };
 }

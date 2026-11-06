@@ -1,6 +1,6 @@
 {
   "name": "@your-org/genie-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Combined AutoMateGenie and GraphDoc MCP server",
   "type": "module",
   "main": "dist/server.js",

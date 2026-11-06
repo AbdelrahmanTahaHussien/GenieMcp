@@ -25,11 +25,11 @@ For Git installation, the Git repository must have this package's `package.json`
 }
 ```
 
-Pin a release by replacing `main` with a tag, for example `git+https://github.com/<org>/genie-mcp.git#v0.1.0`. For reproducible installs, use an immutable release tag or commit hash rather than a moving branch. The package's `prepare` script builds `dist/server.js` during Git installation.
+Pin a release by replacing `main` with a tag, for example `git+https://github.com/<org>/genie-mcp.git#v0.1.1`. For reproducible installs, use an immutable release tag or commit hash rather than a moving branch. The package's `prepare` script builds `dist/server.js` during Git installation.
 
 npm installs the package at the Git repository root; it does not select this package from the parent AutoMateGenie monorepo by a `subdirectory` URL fragment. Keep/publish `genie-mcp` as a standalone Git repository, or use the GitHub Packages install shown above.
 
-For a private repository, authenticate Git itself before starting VS Code: use Git Credential Manager/`gh auth login` with HTTPS, or configure an SSH key and use `git+ssh://git@github.com/<org>/genie-mcp.git#v0.1.0`. Do not put a personal access token in the MCP config or Git URL. The account/key needs read access to the repository.
+For a private repository, authenticate Git itself before starting VS Code: use Git Credential Manager/`gh auth login` with HTTPS, or configure an SSH key and use `git+ssh://git@github.com/<org>/genie-mcp.git#v0.1.1`. Do not put a personal access token in the MCP config or Git URL. The account/key needs read access to the repository.
 
 The published MCP configuration uses:
 

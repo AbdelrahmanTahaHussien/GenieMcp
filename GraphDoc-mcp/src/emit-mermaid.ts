@@ -34,5 +34,5 @@ ${lines.join("\n")}
 
   await mkdir(docsDir, { recursive: true });
   await writeFile(join(docsDir, "Tree.md"), md);
-  console.log(`wrote mindmap with ${lines.length} nodes to docs/Tree.md`);
+  console.error(`wrote mindmap with ${lines.length} nodes to docs/Tree.md`);
 }

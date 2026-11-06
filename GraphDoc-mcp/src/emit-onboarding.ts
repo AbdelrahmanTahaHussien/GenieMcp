@@ -64,6 +64,7 @@ export async function emitOnboarding(
     documented,
     edgeCount,
     wikiLinks,
+    specs,
   } = ctx;
   // Path-qualified link for colliding names, bare `[[Name]]` otherwise.
   const link = (displayName: string): string =>
@@ -109,15 +110,27 @@ export async function emitOnboarding(
   lines.push(
     `| **Source root** | \`${relative(projectInfo.repoRoot, projectInfo.srcRoot)}\` |`,
   );
-  lines.push(
-    `| **Entry point** | \`${relative(projectInfo.repoRoot, projectInfo.rootFile)}\` |`,
-  );
-  lines.push(`| **Root unit** | \`${projectInfo.rootName}\` |`);
+  const roots = projectInfo.roots;
+  if (roots?.length) {
+    lines.push(
+      `| **Entry point** | *(none — ${topLevel.length} independent roots)* |`,
+    );
+    lines.push(`| **Roots** | ${roots.map((r) => `\`${r}\``).join(", ")} |`);
+  } else {
+    lines.push(
+      `| **Entry point** | \`${relative(projectInfo.repoRoot, projectInfo.rootFile)}\` |`,
+    );
+    lines.push(`| **Root unit** | \`${projectInfo.rootName}\` |`);
+  }
   lines.push(`| **Files analyzed** | ${stats.files} |`);
   lines.push(
     `| **Units** | ${stats.units} (components / classes / functions) |`,
   );
   lines.push(`| **Edges** | ${edgeCount} (dependency relationships) |`);
+  if (specs)
+    lines.push(
+      `| **Specs** | ${specs.files} files · ${specs.tests} test cases · ${specs.coveredUnits}/${specs.totalUnits} units covered — see [[Tests]] |`,
+    );
   lines.push(``);
 
   // ── hand-written block ───────────────────────────────────────────────────
@@ -132,10 +145,16 @@ export async function emitOnboarding(
   // ── entry points ──────────────────────────────────────────────────────────
   lines.push(`## Entry Points`);
   lines.push(``);
-  lines.push(
-    `Start reading from \`${projectInfo.rootName}\` — it is the root of the dependency tree.`,
-  );
-  lines.push(`Its direct children are:`);
+  if (roots?.length) {
+    lines.push(
+      `This project has no single entry point. Each of these is an independent root (from ${roots.map((r) => `\`${r}\``).join(", ")}) — start with the one you are working on:`,
+    );
+  } else {
+    lines.push(
+      `Start reading from \`${projectInfo.rootName}\` — it is the root of the dependency tree.`,
+    );
+    lines.push(`Its direct children are:`);
+  }
   lines.push(``);
   for (const child of topLevel.sort()) {
     lines.push(`- ${link(child)}`);
@@ -193,6 +212,10 @@ export async function emitOnboarding(
   lines.push(
     `| [[Api]] | Class diagram of units that expose props/parameters |`,
   );
+  if (specs)
+    lines.push(
+      `| [[Tests]] | Spec coverage map: untested units + test cases per spec |`,
+    );
   lines.push(`| \`docs/src/\` | Per-unit wiki pages with uses/used-by links |`);
   lines.push(``);
 
@@ -228,5 +251,5 @@ export async function emitOnboarding(
   // survives even when ONBOARDING.md itself is gitignored / regenerated.
   if (persist)
     await setOnboardNote(persist.stateDir, persist.noteKey, handwrittenBlock);
-  console.log(`wrote ONBOARDING.md (${lines.length} lines)`);
+  console.error(`wrote ONBOARDING.md (${lines.length} lines)`);
 }

@@ -37,10 +37,12 @@ export const GITIGNORE_CONTENT = `.obsidian
 # location offset, and the module list all live in graphdoc.json.
 src/
 modules/
+specs/
 /Api.md
 /Graph.md
 /Matrix.md
 /ONBOARDING.md
+/Tests.md
 /Tree.md
 `;
 
@@ -64,6 +66,18 @@ export type AnalyzeSettings = {
   rootFile: string | null;
   rootName: string | null;
   styledComponents: boolean;
+  /**
+   * Scan spec/test files and document which units they cover ("Tested by"
+   * sections + Tests.md). A project-level config: flip it here (or pass
+   * includeSpecs to generate_graphdoc / analyze_project) and run `sync`.
+   */
+  includeSpecs?: boolean;
+  /**
+   * Multi-root mode: repo-relative folders/files whose files are independent
+   * roots (e.g. ["src/pages"]) — for projects with no single entry point.
+   * Overrides rootFile when set.
+   */
+  roots?: string[];
 };
 
 /** A recorded generate_module_graphdoc invocation, replayed by sync. */
@@ -112,7 +126,12 @@ export function statePath(docsDir: string): string {
 function emptyState(): GraphdocState {
   return {
     version: CURRENT_VERSION,
-    analyze: { rootFile: null, rootName: null, styledComponents: false },
+    analyze: {
+      rootFile: null,
+      rootName: null,
+      styledComponents: false,
+      includeSpecs: false,
+    },
     modules: [],
     onboard: {},
     units: {},
@@ -136,6 +155,7 @@ export async function readState(docsDir: string): Promise<GraphdocState> {
         rootFile: null,
         rootName: null,
         styledComponents: false,
+        includeSpecs: false,
         ...(parsed.analyze ?? {}),
       },
       modules: parsed.modules ?? [],

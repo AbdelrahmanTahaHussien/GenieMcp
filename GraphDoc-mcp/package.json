@@ -1,7 +1,7 @@
 {
   "name": "graphdoc-mcp",
   "version": "1.0.8",
-  "description": "MCP server that onboards developers and AI agents onto any React codebase (Next.js, Remix, Vite, CRA)",
+  "description": "MCP server that onboards developers, testers and AI agents onto React apps (Next.js, Remix, Vite, CRA) and plain JS/TS projects (Node.js, Express, NestJS, libraries)",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -45,7 +45,11 @@
     "component-tree",
     "vscode",
     "cursor",
-    "react"
+    "react",
+    "nodejs",
+    "typescript",
+    "javascript",
+    "test-coverage"
   ],
   "license": "MIT"
 }

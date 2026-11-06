@@ -30,8 +30,9 @@ const parsedFiles = new Map<string, Entry>();
 const resolveMemo = new Map<string, string | null>();
 
 function cacheKey(file: string, opts?: AnalyzeOptions): string {
-  // styledComponents changes which units are captured → separate variant.
-  return `${file}::${opts?.styledComponents ? 1 : 0}`;
+  // styledComponents / projectKind change which units + edges are captured →
+  // separate variants.
+  return `${file}::${opts?.styledComponents ? 1 : 0}::${opts?.projectKind ?? "react"}`;
 }
 
 /** Return the cached FileInfo when the file is unchanged on disk, else null. */

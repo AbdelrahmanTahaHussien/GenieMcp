@@ -36,6 +36,7 @@ describe("state-store round-trip", () => {
       rootFile: null,
       rootName: null,
       styledComponents: false,
+      includeSpecs: false,
     });
   });
 
@@ -100,6 +101,7 @@ describe("state-store round-trip", () => {
       rootFile: "src/App.tsx",
       rootName: "App",
       styledComponents: true,
+      includeSpecs: false,
     });
   });
 
@@ -194,7 +196,9 @@ describe("derived views for the regeneration read-path", () => {
     ]);
 
     const idx = nameIndexFromState(state as any, "/repo");
-    expect(idx.get("Button")).toBe("/repo/src/ui/Button/Button.tsx");
+    expect(idx.get("Button")?.replace(/\\/g, "/")).toBe(
+      "/repo/src/ui/Button/Button.tsx",
+    );
   });
 });
 
