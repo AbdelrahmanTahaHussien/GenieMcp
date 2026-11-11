@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { handoffSchemas } from "../dist/genie/handoff-schemas.js";
 
 const serverPath = fileURLToPath(new URL("../dist/server.js", import.meta.url));
 let workspace: string | undefined;
@@ -112,7 +113,25 @@ describe("genie-mcp stdio server", () => {
       await writeFile(path.join(workspace, "agents", "handoff", "run-report.json"), report);
       const rendered = await client.callTool({ name: "genie_run_report", arguments: { format: "both" } });
       expect(rendered.isError).not.toBe(true);
-      expect(await readFile(path.join(workspace, "agents", "handoff", "run-report.html"), "utf8")).toContain("KAN-19.home.spec.ts");
+      const reportPath = path.join(workspace, "agents", "handoff", "run-report.html");
+      const telemetry = await readFile(reportPath, "utf8");
+      expect(telemetry).toContain("KAN-19.home.spec.ts");
+      expect(telemetry).toContain("Self-Healing Progress (This Run)");
+      expect(telemetry).toContain('class="cards"');
+      expect(telemetry).toContain("Scoped siteName locator");
+      expect(telemetry).not.toContain("Run Trend");
+      const history = await readFile(new URL("./fixtures/handoffs/run-history.json", import.meta.url), "utf8");
+      const historyData = handoffSchemas["run-history"].parse(JSON.parse(history));
+      await writeFile(path.join(workspace, "agents", "handoff", "run-history.json"), JSON.stringify([...historyData, ...historyData]));
+      const htmlOnly = await client.callTool({ name: "genie_run_report", arguments: { format: "html" } });
+      expect(htmlOnly.isError).not.toBe(true);
+      expect(await readFile(reportPath, "utf8")).toContain("Run Trend (Last 2)");
+      await writeFile(path.join(workspace, "agents", "handoff", "run-history.json"), "invalid json");
+      const invalidHistory = await client.callTool({ name: "genie_run_report", arguments: { format: "html" } });
+      expect(invalidHistory.isError).toBe(true);
+      const jsonOnly = await client.callTool({ name: "genie_run_report", arguments: { format: "json" } });
+      expect(jsonOnly.isError).not.toBe(true);
+      expect(await readFile(path.join(workspace, "agents", "handoff", "run-report.json"), "utf8")).toBe(report);
 
       const outsideDocs = path.join(workspace, "outside-docs");
       await mkdir(outsideDocs);

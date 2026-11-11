@@ -12,6 +12,7 @@ import { loadConfig, resolveConfigDirectory } from "./genie/config.js";
 import { assertWritable } from "./genie/fsGuard.js";
 import { handoffNames, handoffSchemas, type HandoffName } from "./genie/handoff-schemas.js";
 import { configureLoggerWrites } from "./genie/engine/logger.js";
+import { renderRunReport } from "./genie/run-report.js";
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const promptNames = ["orchestrator", "explorer", "generator", "executor"] as const;
@@ -41,38 +42,6 @@ function errorText(error: unknown) {
     content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }],
     isError: true,
   };
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;",
-  })[character]!);
-}
-
-function renderRunReport(data: Record<string, unknown>): string {
-  const attempts = Array.isArray(data.attempts) ? data.attempts as Array<Record<string, unknown>> : [];
-  const summary = data.summary && typeof data.summary === "object"
-    ? data.summary as Record<string, unknown>
-    : {};
-  const rows = attempts.map((attempt) => {
-    const failures = Array.isArray(attempt.failures) ? attempt.failures as Array<Record<string, unknown>> : [];
-    const failureRows = failures.map((failure) =>
-      `<li><strong>${escapeHtml(String(failure.testTitle ?? "—"))}</strong> ` +
-      `[${escapeHtml(String(failure.category ?? "unknown"))}] ${escapeHtml(String(failure.errorMessage ?? "—"))}</li>`,
-    ).join("");
-    return `<section><h2>Attempt ${escapeHtml(String(attempt.attempt ?? "—"))}: ${attempt.success ? "PASS" : "FAIL"}</h2>` +
-      `<p>Passed: ${escapeHtml(String(attempt.passed ?? 0))}; failed: ${escapeHtml(String(attempt.failed ?? 0))}; ` +
-      `duration: ${escapeHtml(String(attempt.durationMs ?? 0))} ms</p><ul>${failureRows || "<li>No failures</li>"}</ul></section>`;
-  }).join("\n");
-  return `<!doctype html><html lang="en"><meta charset="utf-8"><title>Run report</title>` +
-    `<body><h1>${escapeHtml(String(data.spec ?? "Run report"))}</h1>` +
-    `<p>Date: ${escapeHtml(String(data.finishedAt ?? "—"))}; status: ${data.success ? "PASS" : "FAIL"}</p>` +
-    `<p>Passed: ${escapeHtml(String(summary.passed ?? 0))}; failed: ${escapeHtml(String(summary.failed ?? 0))}</p>` +
-    `${rows}</body></html>\n`;
 }
 
 async function main(): Promise<void> {
@@ -192,8 +161,17 @@ async function main(): Promise<void> {
         if (!validation.success) {
           throw new Error(`run-report.json is invalid: ${validation.error.issues.map((issue) => issue.message).join("; ")}`);
         }
-        const html = renderRunReport(validation.data as Record<string, unknown>);
         if (format !== "json") {
+          let history: z.infer<(typeof handoffSchemas)["run-history"]> = [];
+          try {
+            const historyRaw = await fs.readFile(path.join(handoffDir, "run-history.json"), "utf8");
+            history = handoffSchemas["run-history"].parse(JSON.parse(historyRaw));
+          } catch (error) {
+            if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+              throw error;
+            }
+          }
+          const html = renderRunReport(validation.data, history);
           const htmlPath = await assertWritable(path.join(handoffDir, "run-report.html"), [handoffDir], root);
           await fs.writeFile(htmlPath, html, "utf8");
         }

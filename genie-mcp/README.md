@@ -100,7 +100,7 @@ The Zod schemas follow the current handoff JSON files; core fields are validated
 - `run-history.json` is an array of compact per-run summaries, not a single report object.
 - `run-report.json` has core fields `spec`, `finishedAt`, `success`, `attempts`, and `summary`; top-level `failures` is optional in the current file shape. Attempt failures are compact; when top-level failure records are present they may include parser details such as `index`, `stepTitle`, `location`, and `rawBlock`.
 
-`genie_read_handoff` returns raw content plus validation warnings. `genie_write_handoff` requires valid core fields. The HTML renderer uses `run-report.json` as its source and writes inside `handoffDir`.
+`genie_read_handoff` returns raw content plus validation warnings. `genie_write_handoff` requires valid core fields. `genie_run_report` preserves the orchestrator's dark telemetry dashboard: summary cards, attempt history and details, failure categories, applied fixes, and self-healing progress. It uses `run-report.json` for execution results and, when present, validated `run-history.json` for the recent-run trend. Missing history omits that chart; malformed history is reported as an error. Rendering is deterministic for the same JSON inputs, does not modify them, and writes inside `handoffDir`.
 
 ## Build, Test, Publish
 

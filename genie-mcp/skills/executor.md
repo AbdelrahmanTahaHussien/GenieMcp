@@ -9,6 +9,8 @@ Run Playwright with `--project=chromium --reporter=line`, classify output with `
 
 Use `genie_write_handoff` for reports inside configured `handoffDir`; `genie_run_report` renders HTML from `run-report.json`.
 
+Always use `genie_run_report` to produce the packaged telemetry dashboard; do not generate or redesign HTML yourself. Its summary cards, attempt details, fixes, and progress chart come from `run-report.json`. The optional cross-run trend comes from `run-history.json`; never invent history or chart points.
+
 The real handoffs differ from older guidance examples:
 
 - `plan.json` requires only `feature` and `createdAt`; additional test-design data is optional.
