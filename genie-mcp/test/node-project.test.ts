@@ -28,6 +28,38 @@ async function graphFor(dir: string) {
 }
 
 describe("plain JS/TS (non-React) projects", () => {
+  it("auto-detects Playwright POM roots and spec scanning defaults", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "graphdoc-playwright-detect-"));
+    try {
+      await Promise.all(
+        ["pages", "apis", "fixtures", "data", "utils"].map((name) =>
+          mkdir(join(dir, name)),
+        ),
+      );
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "playwright-pom",
+          devDependencies: { "@playwright/test": "^1.0.0" },
+        }),
+      );
+
+      const detected = detectProject(dir);
+      expect(detected.framework).toBe("Playwright");
+      expect(detected.rootFile).toBe("");
+      expect(detected.recommendedRoots).toEqual([
+        "pages",
+        "apis",
+        "fixtures",
+        "data",
+        "utils",
+      ]);
+      expect(detected.includeSpecs).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("detects a non-React project and maps package.json main back to source", () => {
     const d = detectProject(fixture);
     expect(d.kind).toBe("node");

@@ -10,7 +10,7 @@
  * 5. Derive the root unit name from the entry filename
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, basename, extname, dirname } from "node:path";
 import type { ProjectInfo, ProjectKind } from "./types.js";
 
@@ -85,6 +85,47 @@ const NODE_FRAMEWORKS: Array<[dep: string, name: string]> = [
   ["commander", "Node.js CLI"],
   ["yargs", "Node.js CLI"],
 ];
+
+const PLAYWRIGHT_CONFIGS = [
+  "playwright.config.ts",
+  "playwright.config.mts",
+  "playwright.config.js",
+  "playwright.config.mjs",
+  "playwright.config.cts",
+];
+const PLAYWRIGHT_SOURCE_DIRS = [
+  "src",
+  "pages",
+  "apis",
+  "api",
+  "fixtures",
+  "data",
+  "utils",
+  "helpers",
+  "support",
+];
+
+function isPlaywrightProject(
+  repoRoot: string,
+  pkg: Record<string, unknown>,
+): boolean {
+  const deps = depsOf(pkg);
+  return (
+    "@playwright/test" in deps ||
+    "playwright" in deps ||
+    PLAYWRIGHT_CONFIGS.some((file) => existsSync(join(repoRoot, file)))
+  );
+}
+
+function playwrightRoots(repoRoot: string): string[] {
+  return PLAYWRIGHT_SOURCE_DIRS.filter((dir) => {
+    try {
+      return statSync(join(repoRoot, dir)).isDirectory();
+    } catch {
+      return false;
+    }
+  });
+}
 
 /** Plain JS/TS project — anything that is not a React app. */
 function detectPlain(repoRoot: string, pkg: Record<string, unknown>): Manifest {
@@ -243,7 +284,9 @@ export function noEntryMessage(info: ProjectInfo): string {
 export function detectProject(workDir: string): ProjectInfo {
   const repoRoot = findPackageRoot(workDir);
   const pkg = readJson(join(repoRoot, "package.json"));
-  const manifest = detectReact(pkg) ?? detectPlain(repoRoot, pkg);
+  const reactManifest = detectReact(pkg);
+  const playwright = isPlaywrightProject(repoRoot, pkg);
+  const manifest = reactManifest ?? detectPlain(repoRoot, pkg);
   // Plain projects: package.json's declared entry beats naming conventions.
   if (manifest.kind === "node")
     manifest.entryNames = [
@@ -258,13 +301,14 @@ export function detectProject(workDir: string): ProjectInfo {
     );
   }
 
-  const srcRoot = findSrcRoot(repoRoot, manifest.srcDirs);
-  const entry = findEntryFile(
-    srcRoot,
-    repoRoot,
-    manifest.entryNames,
-    manifest.extensions,
-  );
+  const recommendedRoots =
+    playwright && !reactManifest ? playwrightRoots(repoRoot) : [];
+  const srcRoot = recommendedRoots.length
+    ? repoRoot
+    : findSrcRoot(repoRoot, manifest.srcDirs);
+  const entry = recommendedRoots.length
+    ? null
+    : findEntryFile(srcRoot, repoRoot, manifest.entryNames, manifest.extensions);
 
   // No entry is not fatal: a project may be a folder of independent roots
   // (pages/*, scripts/*) documented via `roots`. Callers that need a single
@@ -276,7 +320,9 @@ export function detectProject(workDir: string): ProjectInfo {
     rootName: entry?.name ?? "",
     docsDir: join(repoRoot, "docs"),
     language: manifest.language,
-    framework: manifest.framework,
+    framework: recommendedRoots.length ? "Playwright" : manifest.framework,
     kind: manifest.kind,
+    ...(recommendedRoots.length ? { recommendedRoots } : {}),
+    ...(playwright ? { includeSpecs: true } : {}),
   };
 }

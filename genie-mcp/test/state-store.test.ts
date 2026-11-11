@@ -38,7 +38,6 @@ describe("state-store round-trip", () => {
       rootFile: null,
       rootName: null,
       styledComponents: false,
-      includeSpecs: false,
     });
   });
 
@@ -103,7 +102,6 @@ describe("state-store round-trip", () => {
       rootFile: "src/App.tsx",
       rootName: "App",
       styledComponents: true,
-      includeSpecs: false,
     });
   });
 

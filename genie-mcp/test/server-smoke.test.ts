@@ -198,4 +198,69 @@ describe("genie-mcp stdio server", () => {
       await transport.close();
     }
   });
+
+  it("automatically analyzes Playwright POM folders without GraphDoc overrides", async () => {
+    workspace = await mkdtemp(path.join(tmpdir(), "genie-playwright-auto-roots-"));
+    await Promise.all(
+      ["pages", "apis", "fixtures", "data", "utils", "tests", "agents/handoff"].map((name) =>
+        mkdir(path.join(workspace!, name), { recursive: true }),
+      ),
+    );
+    await mkdir(path.join(workspace, "docs"));
+    await writeFile(
+      path.join(workspace, "package.json"),
+      JSON.stringify({
+        name: "playwright-pom",
+        devDependencies: { "@playwright/test": "^1.0.0" },
+      }),
+    );
+    await writeFile(path.join(workspace, "genie.config.json"), JSON.stringify({
+      testDir: "tests",
+      handoffDir: "agents/handoff",
+    }));
+    await writeFile(
+      path.join(workspace, "pages", "LoginPage.ts"),
+      "export class LoginPage { async open() {} }\n",
+    );
+    await writeFile(
+      path.join(workspace, "apis", "login.ts"),
+      "export function login() { return true; }\n",
+    );
+    await writeFile(
+      path.join(workspace, "tests", "login.spec.ts"),
+      'import { test } from "@playwright/test"; import { LoginPage } from "../pages/LoginPage"; test("opens", () => { void LoginPage; });\n',
+    );
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [serverPath, "--root", workspace],
+      cwd: path.dirname(serverPath),
+      stderr: "pipe",
+    });
+    const client = new Client({ name: "genie-playwright-auto-roots", version: "0.0.0" });
+    try {
+      await client.connect(transport);
+      const detection = await client.callTool({
+        name: "detect_project",
+        arguments: { workDir: workspace },
+      });
+      const detectionText = (detection as { content: Array<{ text: string }> }).content[0].text;
+      expect(detectionText).toContain("roots     : pages, apis, fixtures, data, utils (auto-detected)");
+      expect(detectionText).toContain("specs     : enabled by default");
+
+      const analysis = await client.callTool({
+        name: "analyze_project",
+        arguments: { workDir: workspace },
+      });
+      expect(analysis.isError).not.toBe(true);
+      expect(await readFile(path.join(workspace, "docs", "Tests.md"), "utf8")).toContain("login.spec.ts");
+      expect(await readFile(path.join(workspace, "docs", "src", "pages", "LoginPage.md"), "utf8")).toContain("Tested by");
+      const state = JSON.parse(await readFile(path.join(workspace, "docs", "graphdoc.json"), "utf8"));
+      expect(state.analyze.roots).toEqual(["pages", "apis", "fixtures", "data", "utils"]);
+      expect(state.analyze.includeSpecs).toBe(true);
+    } finally {
+      await client.close();
+      await transport.close();
+    }
+  });
 });

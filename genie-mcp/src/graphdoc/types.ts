@@ -146,6 +146,10 @@ export type ProjectInfo = {
   /** Display name of the framework detected (e.g. "React (Vite)", "Express"). */
   framework: string;
   kind: ProjectKind;
+  /** Automatically selected independent roots for Playwright POM repositories. */
+  recommendedRoots?: string[];
+  /** Recommended spec scanning default for detected test repositories. */
+  includeSpecs?: boolean;
 };
 
 // ─── analysis result ───────────────────────────────────────────────────────

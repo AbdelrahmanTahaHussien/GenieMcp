@@ -309,9 +309,7 @@ async function setup(
   const aliases = loadPathAliases(detected.repoRoot);
   const opts = cacheOpts(detected, styledComponents);
 
-  const roots = rootFile
-    ? undefined
-    : (await readState(detected.docsDir)).analyze.roots;
+  const roots = rootFile ? undefined : await resolveRoots(detected);
   if (roots?.length) {
     const files = expandRoots(roots, detected.repoRoot);
     const cache = await buildRootsCache(files, detected.srcRoot, aliases, opts);
@@ -335,17 +333,31 @@ async function setup(
 
 /**
  * Effective multi-root setting: the tool argument when given (`[]` clears it),
- * else the value stored in graphdoc.json. Normalized to repo-relative paths.
+ * else the configured graphdoc.json value or detected Playwright POM roots.
+ * Normalized to repo-relative paths.
  */
 async function resolveRoots(
   detected: ReturnType<typeof detectProject>,
   roots?: string[],
 ): Promise<string[] | undefined> {
-  const raw = roots ?? (await readState(detected.docsDir)).analyze.roots;
+  const stored = await readState(detected.docsDir);
+  const raw =
+    roots !== undefined
+      ? roots
+      : (stored.analyze.roots ?? detected.recommendedRoots);
   if (!raw?.length) return undefined;
   return raw.map((r) =>
     (isAbsolute(r) ? relative(detected.repoRoot, r) : r).replace(/\\/g, "/"),
   );
+}
+
+async function resolveIncludeSpecs(
+  detected: ReturnType<typeof detectProject>,
+  includeSpecs?: boolean,
+): Promise<boolean> {
+  if (includeSpecs !== undefined) return includeSpecs;
+  const stored = await readState(detected.docsDir);
+  return stored.analyze.includeSpecs ?? detected.includeSpecs ?? false;
 }
 
 const ROOTS_DESC =
@@ -396,6 +408,10 @@ defineTool(
           `repoRoot  : ${info.repoRoot}`,
           `srcRoot   : ${relative(info.repoRoot, info.srcRoot)}`,
           `rootFile  : ${info.rootFile ? relative(info.repoRoot, info.rootFile) : "(none found — pass roots=['src/pages'] for a folder of independent roots, or rootFile)"}`,
+          ...(info.recommendedRoots?.length
+            ? [`roots     : ${info.recommendedRoots.join(", ")} (auto-detected)`]
+            : []),
+          ...(info.includeSpecs ? [`specs     : enabled by default`] : []),
           `rootName  : ${info.rootName}`,
           `docsDir   : ${relative(info.repoRoot, info.docsDir)}`,
         ].join("\n"),
@@ -464,9 +480,7 @@ defineTool(
         styledComponents,
         projectKind: detected.kind,
         // Unset → fall back to the project config stored in graphdoc.json.
-        includeSpecs:
-          includeSpecs ??
-          (await readState(detected.docsDir)).analyze.includeSpecs,
+        includeSpecs: await resolveIncludeSpecs(detected, includeSpecs),
         roots: effRoots,
         rebuild,
       };
@@ -499,7 +513,11 @@ defineTool(
           rootName: rootName ?? null,
           styledComponents: !!styledComponents,
           includeSpecs: !!opts.includeSpecs,
-          ...(effRoots ? { roots: effRoots } : {}),
+          ...(roots !== undefined
+            ? { roots: effRoots ?? [] }
+            : effRoots
+              ? { roots: effRoots }
+              : {}),
         },
         relative(detected.docsDir, detected.repoRoot),
       );
@@ -655,7 +673,7 @@ defineTool(
         : await buildTree(rf, rn, new Set(), cache, manual);
       const tree: Tree = { [rn]: treeData };
       // includeSpecs (graphdoc.json): show 🧪 spec leaves under tested units.
-      if ((await readState(detected.docsDir)).analyze.includeSpecs) {
+      if (await resolveIncludeSpecs(detected)) {
         const specs = await collectSpecs({
           repoRoot: detected.repoRoot,
           docsDir: detected.docsDir,
@@ -1036,9 +1054,7 @@ defineTool(
         styledComponents,
         projectKind: detected.kind,
         // Unset → fall back to the project config stored in graphdoc.json.
-        includeSpecs:
-          includeSpecs ??
-          (await readState(detected.docsDir)).analyze.includeSpecs,
+        includeSpecs: await resolveIncludeSpecs(detected, includeSpecs),
         roots: effRoots,
         rebuild,
       };
@@ -1071,7 +1087,11 @@ defineTool(
           rootName: rootName ?? null,
           styledComponents: !!styledComponents,
           includeSpecs: !!opts.includeSpecs,
-          ...(effRoots ? { roots: effRoots } : {}),
+          ...(roots !== undefined
+            ? { roots: effRoots ?? [] }
+            : effRoots
+              ? { roots: effRoots }
+              : {}),
         },
         relative(detected.docsDir, detected.repoRoot),
       );

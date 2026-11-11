@@ -87,9 +87,9 @@ The Explorer workflow uses GraphDoc's `onboard`, `query_docs`, `get_unit`, and `
 
 ## Playwright and Plain JS/TS Projects
 
-GraphDoc detects non-React JavaScript/TypeScript projects from `package.json` and follows ESM, CommonJS, NodeNext `.js` specifiers, and application wiring. For Page Object Model repositories, set `includeSpecs: true` on `analyze_project` or `generate_graphdoc`; GraphDoc emits `Tests.md`, per-unit “Tested by” sections, spec pages, and spec links in the dependency diagrams. This is import-based coverage mapping, not line coverage.
+GraphDoc detects non-React JavaScript/TypeScript projects from `package.json` and follows ESM, CommonJS, NodeNext `.js` specifiers, and application wiring. In Playwright repositories, it automatically uses the conventional `src`, `pages`, `apis`/`api`, `fixtures`, `data`, `utils`, `helpers`, and `support` folders that exist as graph roots. It also enables spec mapping by default, generating `Tests.md`, per-unit “Tested by” sections, spec pages, and spec links in dependency diagrams. Pass `roots` or `includeSpecs` explicitly to override these defaults. Spec mapping is based on imports, not line coverage.
 
-For repositories with independent roots and no single entry point, pass `roots` with a value such as `src/pages` to `analyze_project` or `generate_graphdoc`. The selected roots and spec-coverage setting are persisted in `graphdocDir/graphdoc.json` and reused by `sync`.
+For other repositories with independent roots and no single entry point, pass `roots` with a value such as `src/pages` to `analyze_project` or `generate_graphdoc`. The selected roots and spec-coverage setting are persisted in `graphdocDir/graphdoc.json` and reused by `sync`.
 
 ## Handoff Shape Notes
 
