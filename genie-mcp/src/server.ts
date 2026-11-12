@@ -52,13 +52,51 @@ async function main(): Promise<void> {
   const handoffDir = resolveConfigDirectory(root, config.handoffDir);
   const graphdocDir = resolveConfigDirectory(root, config.graphdocDir!);
   configureLoggerWrites(root, [testDir, handoffDir]);
-  const server = new McpServer({ name: "genie-mcp", version: "0.1.0" });
+  const server = new McpServer(
+    { name: "genie-mcp", version: "0.1.0" },
+    modules.has("genie")
+      ? { instructions: "For any request to create, generate or update Playwright tests from test cases, call genie_orchestrator first and follow its result exactly. Use GraphDoc tools to find relevant code before reading files." }
+      : {},
+  );
 
   if (modules.has("graphdoc")) {
     registerGraphdocTools(server, { root, graphdocDir });
   }
 
   if (modules.has("genie")) {
+    const promptsDir = path.join(PACKAGE_ROOT, "prompts");
+    const skillsDir = path.join(PACKAGE_ROOT, "skills");
+
+    server.registerTool(
+      "genie_orchestrator",
+      {
+        title: "Genie orchestrator",
+        description: "Call this FIRST for any request to create, generate or update Playwright tests from test cases (plain language or Gherkin). Returns the complete QA workflow (Explorer, Generator, Executor) with your inputs filled in. Follow the returned steps exactly.",
+        inputSchema: {
+          testCases: z.string().trim().min(1).describe("Test cases in plain language or Gherkin."),
+          siteUrl: z.string().trim().min(1).optional().describe("Application URL; defaults to baseUrl in genie.config.json."),
+          jiraTicket: z.string().trim().min(1).optional().describe("Optional Jira ticket for supporting context."),
+        },
+      },
+      async ({ testCases, siteUrl, jiraTicket }) => {
+        const effectiveSiteUrl = siteUrl ?? config.baseUrl;
+        if (!effectiveSiteUrl) {
+          throw new Error("Provide siteUrl or set baseUrl in genie.config.json.");
+        }
+        const [template, ...guidance] = await Promise.all([
+          fs.readFile(path.join(promptsDir, "orchestrator.md"), "utf8"),
+          ...skillNames.map((name) => fs.readFile(path.join(skillsDir, `${name}.md`), "utf8")),
+        ]);
+        return text([
+          "WORKFLOW STARTED. Follow every stage in order. Run GraphDoc first. Ask for clarification instead of guessing missing details.",
+          template,
+          `## Supplied inputs\n${JSON.stringify({ testCases, siteUrl: effectiveSiteUrl, ...(jiraTicket ? { jiraTicket } : {}) }, null, 2)}`,
+          "## Stage guidance\nThe following guidance is included for clients that cannot read MCP resources.",
+          ...guidance,
+        ].join("\n\n"));
+      },
+    );
+
     server.registerTool(
       "genie_get_config",
       { title: "Get Genie config", description: "Return genie.config.json for this workspace.", inputSchema: {} },
@@ -181,7 +219,6 @@ async function main(): Promise<void> {
       },
     );
 
-    const promptsDir = path.join(PACKAGE_ROOT, "prompts");
     for (const name of promptNames) {
       server.registerPrompt(
         `genie_${name}`,
@@ -199,7 +236,6 @@ async function main(): Promise<void> {
       );
     }
 
-    const skillsDir = path.join(PACKAGE_ROOT, "skills");
     server.registerResource(
       "skills",
       new ResourceTemplate("skill://{name}", {

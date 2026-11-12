@@ -46,6 +46,9 @@ describe("genie-mcp stdio server", () => {
     const client = new Client({ name: "genie-mcp-smoke", version: "0.0.0" });
     try {
       await client.connect(transport);
+      expect(client.getInstructions()).toBe(
+        "For any request to create, generate or update Playwright tests from test cases, call genie_orchestrator first and follow its result exactly. Use GraphDoc tools to find relevant code before reading files.",
+      );
       const [tools, prompts, resources, resourceTemplates] = await Promise.all([
         client.listTools(),
         client.listPrompts(),
@@ -53,9 +56,9 @@ describe("genie-mcp stdio server", () => {
         client.listResourceTemplates(),
       ]);
       const toolNames = tools.tools.map((tool) => tool.name);
-      expect(toolNames).toHaveLength(22);
+      expect(toolNames).toHaveLength(23);
       for (const name of [
-        "genie_get_config", "genie_analyze", "genie_read_handoff",
+        "genie_orchestrator", "genie_get_config", "genie_analyze", "genie_read_handoff",
         "genie_write_handoff", "genie_write_test_file", "genie_run_report",
         "detect_project", "analyze_project", "onboard", "get_tree", "get_graph",
         "get_unit", "query_docs", "generate_graphdoc", "read_unit_source",
@@ -70,6 +73,33 @@ describe("genie-mcp stdio server", () => {
       ]);
       expect(resources.resources.map((resource) => resource.uri)).toContain("skill://explorer");
       expect(resourceTemplates.resourceTemplates.map((resource) => resource.uriTemplate)).toContain("skill://{name}");
+
+      const orchestrator = await client.callTool({
+        name: "genie_orchestrator",
+        arguments: { testCases: "Given a customer\nWhen they sign in\nThen the account is shown" },
+      });
+      expect(orchestrator.isError).not.toBe(true);
+      const workflow = (orchestrator as { content: Array<{ text: string }> }).content[0].text;
+      const template = await readFile(new URL("../prompts/orchestrator.md", import.meta.url), "utf8");
+      expect(workflow.startsWith("WORKFLOW STARTED. Follow every stage in order. Run GraphDoc first. Ask for clarification instead of guessing missing details.")).toBe(true);
+      expect(workflow).toContain(template);
+      expect(workflow).toContain('"testCases": "Given a customer\\nWhen they sign in\\nThen the account is shown"');
+      expect(workflow).toContain('"siteUrl": "http://localhost:5173"');
+      for (const name of ["explorer", "test-design", "import-graph", "generator", "executor"]) {
+        expect(workflow).toContain(await readFile(new URL(`../skills/${name}.md`, import.meta.url), "utf8"));
+      }
+
+      const prompt = await client.getPrompt({ name: "genie_orchestrator", arguments: { task: "Check login" } });
+      expect(prompt.messages[0].content).toMatchObject({ type: "text", text: `${template}\n\nTask: Check login` });
+
+      const overridden = await client.callTool({
+        name: "genie_orchestrator",
+        arguments: { testCases: "Check login", siteUrl: "https://example.test", jiraTicket: "KAN-123" },
+      });
+      const overriddenText = (overridden as { content: Array<{ text: string }> }).content[0].text;
+      expect(overridden.isError).not.toBe(true);
+      expect(overriddenText).toContain('"siteUrl": "https://example.test"');
+      expect(overriddenText).toContain('"jiraTicket": "KAN-123"');
 
       const skill = await client.readResource({ uri: "skill://explorer" });
       expect(skill.contents[0]).toMatchObject({ uri: "skill://explorer" });
@@ -164,8 +194,26 @@ describe("genie-mcp stdio server", () => {
     try {
       await client.connect(transport);
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(6);
+      expect(tools.tools).toHaveLength(7);
       expect(tools.tools.every((tool) => tool.name.startsWith("genie_"))).toBe(true);
+      const missingUrl = await client.callTool({
+        name: "genie_orchestrator",
+        arguments: { testCases: "Check login" },
+      });
+      expect(missingUrl.isError).toBe(true);
+      expect((missingUrl as { content: Array<{ text: string }> }).content[0].text).toContain(
+        "Provide siteUrl or set baseUrl in genie.config.json.",
+      );
+      const withUrl = await client.callTool({
+        name: "genie_orchestrator",
+        arguments: { testCases: "Check login", siteUrl: "https://example.test" },
+      });
+      expect(withUrl.isError).not.toBe(true);
+      const missingCases = await client.callTool({
+        name: "genie_orchestrator",
+        arguments: { siteUrl: "https://example.test" },
+      });
+      expect(missingCases.isError).toBe(true);
     } finally {
       await client.close();
       await transport.close();
