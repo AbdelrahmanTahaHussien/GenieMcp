@@ -80,9 +80,6 @@ async function main(): Promise<void> {
       },
       async ({ testCases, siteUrl, jiraTicket }) => {
         const effectiveSiteUrl = siteUrl ?? config.baseUrl;
-        if (!effectiveSiteUrl) {
-          throw new Error("Provide siteUrl or set baseUrl in genie.config.json.");
-        }
         const [template, ...guidance] = await Promise.all([
           fs.readFile(path.join(promptsDir, "orchestrator.md"), "utf8"),
           ...skillNames.map((name) => fs.readFile(path.join(skillsDir, `${name}.md`), "utf8")),
@@ -91,6 +88,9 @@ async function main(): Promise<void> {
           "WORKFLOW STARTED. Follow every stage in order. Run GraphDoc first. Ask for clarification instead of guessing missing details.",
           template,
           `## Supplied inputs\n${JSON.stringify({ testCases, siteUrl: effectiveSiteUrl, ...(jiraTicket ? { jiraTicket } : {}) }, null, 2)}`,
+          ...(!effectiveSiteUrl
+            ? ["No site URL was supplied. Use the existing project configuration if applicable, and ask for clarification if a URL is needed and cannot be determined."]
+            : []),
           "## Stage guidance\nThe following guidance is included for clients that cannot read MCP resources.",
           ...guidance,
         ].join("\n\n"));

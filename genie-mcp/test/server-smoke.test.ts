@@ -200,10 +200,11 @@ describe("genie-mcp stdio server", () => {
         name: "genie_orchestrator",
         arguments: { testCases: "Check login" },
       });
-      expect(missingUrl.isError).toBe(true);
-      expect((missingUrl as { content: Array<{ text: string }> }).content[0].text).toContain(
-        "Provide siteUrl or set baseUrl in genie.config.json.",
-      );
+      expect(missingUrl.isError).not.toBe(true);
+      const noUrlWorkflow = (missingUrl as { content: Array<{ text: string }> }).content[0].text;
+      expect(noUrlWorkflow).toContain('"testCases": "Check login"');
+      expect(noUrlWorkflow).toContain("No site URL was supplied.");
+      expect(noUrlWorkflow).toContain("ask for clarification if a URL is needed and cannot be determined");
       const withUrl = await client.callTool({
         name: "genie_orchestrator",
         arguments: { testCases: "Check login", siteUrl: "https://example.test" },

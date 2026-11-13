@@ -83,7 +83,7 @@ With the Genie MCP server enabled, ask in chat:
 genie: <test cases>
 ```
 
-Provide the test cases in plain language or Gherkin, and optionally a site URL and Jira ticket. The `genie_orchestrator` tool uses the supplied site URL or `baseUrl` from `genie.config.json`; if neither is provided, it returns an error. Clients without MCP prompt support use this tool instead. The returned workflow includes the stage guidance for clients that cannot read MCP resources. Tool selection and adherence to server instructions depend on the client; if needed, explicitly ask it to call `genie_orchestrator`.
+Provide the test cases in plain language or Gherkin, and optionally a site URL and Jira ticket. The `genie_orchestrator` tool uses the supplied site URL or `baseUrl` from `genie.config.json` when available. It can start without either; if a URL is needed later, the workflow uses existing project configuration or asks for clarification. Clients without MCP prompt support use this tool instead. The returned workflow includes the stage guidance for clients that cannot read MCP resources. Tool selection and adherence to server instructions depend on the client; if needed, explicitly ask it to call `genie_orchestrator`.
 
 ## Tools
 
