@@ -7,7 +7,7 @@ description: >
 
 # QA Orchestrator
 
-Use the supplied plain-language or Gherkin cases as the requirements. Jira is optional supporting context. Read `genie_get_config` first for `testDir`, `handoffDir`, `baseUrl`, and conventions. Load stage guidance from `skill://explorer`, `skill://test-design`, `skill://import-graph`, `skill://generator`, and `skill://executor` as needed.
+Use the supplied plain-language or Gherkin cases as the requirements. Jira is optional supporting context. Read `genie_get_config` first for `testDir`, `handoffDir`, `baseUrl`, and conventions. Load stage guidance from `skill://explorer`, `skill://test-design`, `skill://import-graph`, `skill://generator`, and `skill://executor` as needed. When the workspace has a root `playwright.config.*` file, follow the Playwright best-practice instructions included by `genie_orchestrator`; retrieve them with `genie_get_instructions` using `name: "best-practices"` if needed.
 
 Run Explorer → Generator → Executor in order. Preserve user case IDs and intent. Never guess expected outcomes or write outside configured directories.
 

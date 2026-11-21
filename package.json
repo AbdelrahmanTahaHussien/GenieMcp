@@ -1,0 +1,28 @@
+{
+  "name": "automategenie",
+  "version": "1.0.0",
+  "description": "A Copilot workflow that turns supplied test cases into traceable Playwright tests, runs them in Chromium, and records execution results.",
+  "main": "eslint.config.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NB31136_celfocus/AutoMateGenie.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/NB31136_celfocus/AutoMateGenie/issues"
+  },
+  "homepage": "https://github.com/NB31136_celfocus/AutoMateGenie#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.65.0"
+  }
+}

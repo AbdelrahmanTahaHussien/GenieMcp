@@ -17,6 +17,13 @@ import { renderRunReport } from "./genie/run-report.js";
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const promptNames = ["orchestrator", "explorer", "generator", "executor"] as const;
 const skillNames = ["executor", "explorer", "generator", "import-graph", "test-design"] as const;
+const PLAYWRIGHT_CONFIG_FILES = [
+  "playwright.config.ts",
+  "playwright.config.mts",
+  "playwright.config.js",
+  "playwright.config.mjs",
+  "playwright.config.cts",
+];
 
 function argument(name: string, fallback?: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
@@ -68,6 +75,16 @@ async function main(): Promise<void> {
     const skillsDir = path.join(PACKAGE_ROOT, "skills");
 
     server.registerTool(
+      "genie_get_instructions",
+      {
+        title: "Get Genie instructions",
+        description: "Return named Genie instruction guidance.",
+        inputSchema: { name: z.enum(["best-practices"]) },
+      },
+      async ({ name }) => text(await fs.readFile(path.join(skillsDir, `${name}.md`), "utf8")),
+    );
+
+    server.registerTool(
       "genie_orchestrator",
       {
         title: "Genie orchestrator",
@@ -84,6 +101,10 @@ async function main(): Promise<void> {
           fs.readFile(path.join(promptsDir, "orchestrator.md"), "utf8"),
           ...skillNames.map((name) => fs.readFile(path.join(skillsDir, `${name}.md`), "utf8")),
         ]);
+        const workspaceEntries = await fs.readdir(root);
+        const playwrightGuidance = workspaceEntries.some((entry) => PLAYWRIGHT_CONFIG_FILES.includes(entry))
+          ? await fs.readFile(path.join(skillsDir, "best-practices.md"), "utf8")
+          : undefined;
         return text([
           "WORKFLOW STARTED. Follow every stage in order. Run GraphDoc first. Ask for clarification instead of guessing missing details.",
           template,
@@ -91,6 +112,7 @@ async function main(): Promise<void> {
           ...(!effectiveSiteUrl
             ? ["No site URL was supplied. Use the existing project configuration if applicable, and ask for clarification if a URL is needed and cannot be determined."]
             : []),
+          ...(playwrightGuidance ? ["## Playwright best-practice instructions", playwrightGuidance] : []),
           "## Stage guidance\nThe following guidance is included for clients that cannot read MCP resources.",
           ...guidance,
         ].join("\n\n"));

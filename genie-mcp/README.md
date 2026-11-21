@@ -87,11 +87,11 @@ Provide the test cases in plain language or Gherkin, and optionally a site URL a
 
 ## Tools
 
-Genie tools: `genie_orchestrator`, `genie_get_config`, `genie_analyze`, `genie_read_handoff`, `genie_write_handoff`, `genie_write_test_file`, `genie_run_report`.
+Genie tools: `genie_orchestrator`, `genie_get_config`, `genie_get_instructions`, `genie_analyze`, `genie_read_handoff`, `genie_write_handoff`, `genie_write_test_file`, `genie_run_report`.
 
 GraphDoc tools retain their original names: `detect_project`, `analyze_project`, `onboard`, `get_tree`, `get_graph`, `get_unit`, `query_docs`, `generate_graphdoc`, `read_unit_source`, `document_unit`, `link_units`, `unlink_units`, `document_all_units`, `generate_module_graphdoc`, `sync`, and `export_doc_state`.
 
-Prompts: `genie_orchestrator`, `genie_explorer`, `genie_generator`, `genie_executor`. Skills are exposed at `skill://executor`, `skill://explorer`, `skill://generator`, `skill://import-graph`, and `skill://test-design`.
+Prompts: `genie_orchestrator`, `genie_explorer`, `genie_generator`, `genie_executor`. Skills are exposed at `skill://executor`, `skill://explorer`, `skill://generator`, `skill://import-graph`, and `skill://test-design`. The orchestrator includes the `best-practices` Playwright instructions when the workspace root contains a supported `playwright.config.*` file; `genie_get_instructions` also returns those instructions on request.
 
 The Explorer workflow uses GraphDoc's `onboard`, `query_docs`, `get_unit`, and `read_unit_source` tools to locate relevant files, then checks current source/tests for behavioral evidence.
 

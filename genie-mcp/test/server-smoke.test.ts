@@ -56,9 +56,9 @@ describe("genie-mcp stdio server", () => {
         client.listResourceTemplates(),
       ]);
       const toolNames = tools.tools.map((tool) => tool.name);
-      expect(toolNames).toHaveLength(23);
+      expect(toolNames).toHaveLength(24);
       for (const name of [
-        "genie_orchestrator", "genie_get_config", "genie_analyze", "genie_read_handoff",
+        "genie_orchestrator", "genie_get_config", "genie_get_instructions", "genie_analyze", "genie_read_handoff",
         "genie_write_handoff", "genie_write_test_file", "genie_run_report",
         "detect_project", "analyze_project", "onboard", "get_tree", "get_graph",
         "get_unit", "query_docs", "generate_graphdoc", "read_unit_source",
@@ -81,8 +81,10 @@ describe("genie-mcp stdio server", () => {
       expect(orchestrator.isError).not.toBe(true);
       const workflow = (orchestrator as { content: Array<{ text: string }> }).content[0].text;
       const template = await readFile(new URL("../prompts/orchestrator.md", import.meta.url), "utf8");
+      const bestPractices = await readFile(new URL("../skills/best-practices.md", import.meta.url), "utf8");
       expect(workflow.startsWith("WORKFLOW STARTED. Follow every stage in order. Run GraphDoc first. Ask for clarification instead of guessing missing details.")).toBe(true);
       expect(workflow).toContain(template);
+      expect(workflow).not.toContain(bestPractices);
       expect(workflow).toContain('"testCases": "Given a customer\\nWhen they sign in\\nThen the account is shown"');
       expect(workflow).toContain('"siteUrl": "http://localhost:5173"');
       for (const name of ["explorer", "test-design", "import-graph", "generator", "executor"]) {
@@ -104,6 +106,20 @@ describe("genie-mcp stdio server", () => {
       const skill = await client.readResource({ uri: "skill://explorer" });
       expect(skill.contents[0]).toMatchObject({ uri: "skill://explorer" });
       expect((skill.contents[0] as { text: string }).text).toContain("# Explorer");
+
+      const instructions = await client.callTool({
+        name: "genie_get_instructions",
+        arguments: { name: "best-practices" },
+      });
+      expect((instructions as { content: Array<{ text: string }> }).content[0].text).toBe(bestPractices);
+
+      await writeFile(path.join(workspace, "playwright.config.ts"), "export default {};");
+      const playwrightOrchestrator = await client.callTool({
+        name: "genie_orchestrator",
+        arguments: { testCases: "Check login" },
+      });
+      expect(playwrightOrchestrator.isError).not.toBe(true);
+      expect((playwrightOrchestrator as { content: Array<{ text: string }> }).content[0].text).toContain(bestPractices);
 
       const config = await client.callTool({ name: "genie_get_config", arguments: {} });
       const configContent = (config as { content: Array<{ text: string }> }).content;
@@ -194,7 +210,7 @@ describe("genie-mcp stdio server", () => {
     try {
       await client.connect(transport);
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(7);
+      expect(tools.tools).toHaveLength(8);
       expect(tools.tools.every((tool) => tool.name.startsWith("genie_"))).toBe(true);
       const missingUrl = await client.callTool({
         name: "genie_orchestrator",
